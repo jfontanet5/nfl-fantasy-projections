@@ -8,7 +8,9 @@ import pytest
 from nflproj.features.calendar import (
     LATE_AVAILABILITY_COLUMNS,
     completed_games,
+    current_season,
     latest_completed_week,
+    next_projectable_week,
 )
 
 
@@ -61,3 +63,38 @@ def test_spread_sign_convention_is_symmetric():
     away_implied = total / 2 + away_view / 2
     assert home_implied + away_implied == pytest.approx(total)
     assert home_implied - away_implied == pytest.approx(spread_line)
+
+
+def test_next_projectable_week_follows_the_last_completed(calendar):
+    assert next_projectable_week(calendar, 2024) == 3
+
+
+def test_next_projectable_week_is_none_before_the_season_starts():
+    unplayed = pd.DataFrame(
+        {"season": [2026, 2026], "week": [1, 1], "team": ["A", "B"], "result": [None, None]}
+    )
+    assert next_projectable_week(unplayed, 2026) is None
+
+
+def test_next_projectable_week_is_none_once_the_season_ends():
+    done = pd.DataFrame(
+        {"season": [2024, 2024], "week": [1, 1], "team": ["A", "B"], "result": [3.0, -3.0]}
+    )
+    assert next_projectable_week(done, 2024) is None
+
+
+def test_current_season_is_the_latest_with_a_completed_game():
+    frame = pd.DataFrame(
+        {
+            "season": [2024, 2025, 2026],
+            "week": [1, 1, 1],
+            "team": ["A", "A", "A"],
+            "result": [3.0, 7.0, None],
+        }
+    )
+    assert current_season(frame) == 2025
+
+
+def test_current_season_is_none_when_nothing_has_been_played():
+    frame = pd.DataFrame({"season": [2026], "week": [1], "team": ["A"], "result": [None]})
+    assert current_season(frame) is None

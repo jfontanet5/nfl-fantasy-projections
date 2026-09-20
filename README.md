@@ -58,6 +58,19 @@ Full output, including per-position and early-season slices:
 [`reports/scorecard.md`](reports/scorecard.md) ·
 [`reports/scorecard.json`](reports/scorecard.json)
 
+### The public page
+
+`nflproj report` renders the same data as a static page — the upcoming week's
+board next to a plain-language reading of how much to trust it. The weekly
+workflow rebuilds and deploys it every Tuesday.
+
+The translations are computed from the metrics, not written beside them. If a
+future model moves calibration from 0.85 to 1.01, the page stops telling readers
+to shade the extremes toward the middle on its own, because the copy is a
+function of the number. Prose hardcoded next to a live metric is a lie waiting
+to happen, so `report/interpret.py` is a set of typed rules with a test per
+band.
+
 ---
 
 ## Why you should believe the numbers
@@ -106,7 +119,11 @@ uv run nflproj status                              # how far has the season got
 uv run nflproj ingest --seasons 2015-2026          # mirror upstream, with provenance
 uv run nflproj backtest --seasons 2015-2025        # walk-forward + scorecard
 uv run nflproj project 2026 --week 3               # project an upcoming week
+uv run nflproj report                              # render the public page
 ```
+
+`report` takes no arguments by default: the season and week come from the
+schedule, so the weekly job never has to know today's date.
 
 Or in a container:
 
@@ -150,10 +167,10 @@ see.
 
 | Gate | Status |
 |---|---|
-| `pytest` | 139 tests (123 hermetic unit, 16 live-upstream) |
+| `pytest` | 191 tests (175 hermetic unit, 16 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
-| Coverage | 93% from unit tests alone, CI floor 85% |
+| Coverage | 91% from unit tests alone, CI floor 85% |
 | Container | multi-stage, non-root; CI builds it and asserts it runs unprivileged |
 
 > The container cannot be built in the environment this was developed in

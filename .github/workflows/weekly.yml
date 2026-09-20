@@ -1,15 +1,17 @@
 name: Weekly scorecard
 
-# The public track record. Runs after every NFL week has finished, scores the
-# projections that were published before that week, and commits the result.
+# The public track record. Runs after every NFL week has finished, re-scores the
+# projections that were published before those games, rebuilds the page and
+# deploys it.
 #
-# Committing rather than just publishing is the point: the scorecard's history
-# is in git, so a number cannot be quietly revised after the fact.
+# The scorecard is committed as well as deployed. Deploying makes it visible;
+# committing makes it permanent - the history of what this system claimed, and
+# when, lives in git where it cannot be quietly revised after the fact.
 
 on:
   schedule:
-    # Tuesday 12:00 UTC - after Monday night football has finished and after
-    # nflverse has rebuilt its weekly stats.
+    # Tuesday 12:00 UTC - after Monday night football, and after nflverse has
+    # rebuilt its weekly stats.
     - cron: "0 12 * * 2"
   workflow_dispatch:
     inputs:
@@ -17,9 +19,16 @@ on:
         description: "Season range to backtest, e.g. 2015-2026"
         required: false
         default: "2015-2026"
+      deploy:
+        description: "Deploy the page to GitHub Pages"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: weekly-scorecard
@@ -58,6 +67,11 @@ jobs:
             --universe played \
             --stem scorecard_played_only
 
+      # Season and week are derived from the schedule, so the job never has to
+      # know today's date or which week the NFL is on.
+      - name: build the public page
+        run: uv run nflproj report
+
       - name: commit the track record
         run: |
           git config user.name  "github-actions[bot]"
@@ -70,7 +84,17 @@ jobs:
           git commit -m "chore(scorecard): weekly refresh $(date -u +%Y-%m-%d)"
           git push
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-pages-artifact@v3
         with:
-          name: scorecard
           path: reports/
+
+  deploy:
+    needs: scorecard
+    if: inputs.deploy != false
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -163,3 +163,32 @@ def latest_completed_week(calendar: pd.DataFrame, season: int) -> int | None:
     if len(complete) == 0:
         return None
     return int(max(complete))
+
+
+def next_projectable_week(calendar: pd.DataFrame, season: int) -> int | None:
+    """The earliest week of ``season`` that is still to be played.
+
+    This is what a weekly job should publish: the week after the last one that
+    finished. Deriving it from the data rather than from the calendar date means
+    the schedule is the single source of truth, and a postponed game shifts the
+    published week automatically.
+
+    Returns ``None`` when the season has not started, has finished, or the next
+    week would be week 1, which is out of scope.
+    """
+    last_done = latest_completed_week(calendar, season)
+    if last_done is None:
+        return None
+    candidate = last_done + 1
+    season_weeks = calendar.loc[calendar["season"] == season, "week"]
+    if season_weeks.empty or candidate > int(season_weeks.max()):
+        return None
+    return candidate
+
+
+def current_season(calendar: pd.DataFrame) -> int | None:
+    """The most recent season that has at least one completed game."""
+    played = calendar[calendar["result"].notna()]
+    if played.empty:
+        return None
+    return int(played["season"].max())

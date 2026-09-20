@@ -1,0 +1,263 @@
+"""The report page.
+
+This page is the public face of the project, so the tests focus on the ways a
+generated page embarrasses you: unescaped names, a board longer than the
+decision it serves, a page that breaks when there is nothing to project, and a
+document that claims a metric the scorecard does not contain.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pandas as pd
+import pytest
+
+from nflproj.report import html as rh
+
+
+def _scorecard_row(predictor: str, **overrides: Any) -> dict[str, Any]:
+    row = {
+        "predictor": predictor,
+        "n_rows": 1000,
+        "n_weeks": 20,
+        "mae": 4.417,
+        "rmse": 6.331,
+        "bias": -0.272,
+        "spearman": 0.596,
+        "top_n_hit_rate": 0.522,
+        "calibration_slope": 0.846,
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.fixture
+def scorecard() -> dict[str, Any]:
+    return {
+        "generated_at": "2026-09-20T12:00:00+00:00",
+        "schema_version": "1",
+        "universe": "active_recent",
+        "baseline": "season_to_date_mean",
+        "seasons": [2015, 2025],
+        "n_predictions": 492485,
+        "provenance": {
+            "raw_assets": {"player_stats/2024": "a" * 64},
+            "played_rate": 0.746,
+        },
+        "slices": {
+            "overall": [
+                _scorecard_row("ewma_hl3"),
+                _scorecard_row("season_to_date_mean", mae=4.591),
+            ],
+            "by_position": [
+                _scorecard_row("ewma_hl3", position=p, spearman=s)
+                for p, s in (("QB", 0.616), ("RB", 0.613), ("WR", 0.606), ("TE", 0.548))
+            ],
+            "by_season_phase": [
+                _scorecard_row("ewma_hl3", season_phase="weeks_2_4", spearman=0.540),
+                _scorecard_row("ewma_hl3", season_phase="weeks_5_plus", spearman=0.608),
+            ],
+        },
+    }
+
+
+@pytest.fixture
+def projections() -> pd.DataFrame:
+    rows = []
+    for position, count in (("QB", 15), ("RB", 30), ("WR", 40), ("TE", 14)):
+        for i in range(count):
+            rows.append(
+                {
+                    "season": 2026,
+                    "week": 3,
+                    "player_id": f"{position}-{i}",
+                    "player_display_name": f"{position} Player {i}",
+                    "position": position,
+                    "team": "BUF",
+                    "opponent_team": "LAC",
+                    "predictor": "ewma_hl3",
+                    "prediction": float(count - i),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture
+def data(scorecard, projections, tmp_path) -> rh.ReportData:
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps(scorecard))
+    return rh.build_report_data(
+        scorecard_path=path,
+        projections=projections,
+        season=2026,
+        week=3,
+        predictor="ewma_hl3",
+    )
+
+
+# ---------------------------------------------------------------- structure
+
+
+def test_document_is_a_complete_html_page(data):
+    doc = rh.render_document(data)
+    assert doc.startswith("<!doctype html>")
+    assert '<html lang="en">' in doc
+    assert doc.rstrip().endswith("</html>")
+    assert "viewport-fit=cover" in doc
+
+
+def test_body_omits_the_document_skeleton(data):
+    """The Artifact pipeline supplies its own skeleton; duplicating it breaks the page."""
+    body = rh.render_body(data)
+    assert "<!doctype" not in body.lower()
+    assert "<html" not in body.lower()
+    assert "<body" not in body.lower()
+    assert "<title>" in body
+    assert "<style>" in body
+
+
+def test_both_renderings_share_the_same_content(data):
+    content = rh.render_content(data)
+    assert content in rh.render_body(data)
+    assert content in rh.render_document(data)
+
+
+def test_page_declares_both_themes(data):
+    doc = rh.render_document(data)
+    assert "prefers-color-scheme: dark" in doc
+    assert '[data-theme="dark"]' in doc
+    assert ':root:not([data-theme="light"])' in doc
+
+
+def test_page_carries_no_javascript(data):
+    """Everything must be readable at rest, including as a link preview."""
+    assert "<script" not in rh.render_document(data).lower()
+
+
+# ---------------------------------------------------------------- board
+
+
+def test_board_is_capped_at_the_starter_tier(data):
+    content = rh.render_content(data)
+    # QB tier is 12; the fixture supplies 15 players.
+    assert "QB Player 0" in content
+    assert "QB Player 11" in content
+    assert "QB Player 12" not in content
+
+
+def test_board_is_ordered_by_projection(data):
+    content = rh.render_content(data)
+    first = content.index("QB Player 0")
+    second = content.index("QB Player 1<")
+    assert first < second
+
+
+def test_every_position_appears(data):
+    content = rh.render_content(data)
+    for position in ("QB", "RB", "WR", "TE"):
+        assert f"{position} Player 0" in content
+
+
+def test_missing_projections_do_not_break_the_page(scorecard, tmp_path):
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps(scorecard))
+    data = rh.build_report_data(
+        scorecard_path=path, projections=None, season=2026, week=3, predictor="ewma_hl3"
+    )
+    content = rh.render_content(data)
+    assert "No projections available" in content
+    # The track record is still worth publishing without a board.
+    assert "How much to trust it" in content
+
+
+def test_over_dispersion_warning_appears_when_calibration_is_low(data):
+    assert "spread wider than reality" in rh.render_content(data)
+
+
+def test_no_over_dispersion_warning_when_well_calibrated(scorecard, projections, tmp_path):
+    for row in scorecard["slices"]["overall"]:
+        row["calibration_slope"] = 1.01
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps(scorecard))
+    data = rh.build_report_data(
+        scorecard_path=path,
+        projections=projections,
+        season=2026,
+        week=3,
+        predictor="ewma_hl3",
+    )
+    assert "spread wider than reality" not in rh.render_content(data)
+
+
+# ---------------------------------------------------------------- safety
+
+
+def test_player_names_are_escaped(scorecard, tmp_path):
+    hostile = pd.DataFrame(
+        [
+            {
+                "season": 2026,
+                "week": 3,
+                "player_id": "x",
+                "player_display_name": '<script>alert("xss")</script>',
+                "position": "QB",
+                "team": "BUF",
+                "opponent_team": "LAC",
+                "predictor": "ewma_hl3",
+                "prediction": 20.0,
+            }
+        ]
+    )
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps(scorecard))
+    data = rh.build_report_data(
+        scorecard_path=path, projections=hostile, season=2026, week=3, predictor="ewma_hl3"
+    )
+    content = rh.render_content(data)
+    assert "<script>" not in content
+    assert "&lt;script&gt;" in content
+
+
+def test_unknown_predictor_fails_loudly(scorecard, projections, tmp_path):
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps(scorecard))
+    data = rh.build_report_data(
+        scorecard_path=path,
+        projections=projections,
+        season=2026,
+        week=3,
+        predictor="does_not_exist",
+    )
+    with pytest.raises(KeyError, match="does_not_exist"):
+        rh.render_content(data)
+
+
+# ---------------------------------------------------------------- content
+
+
+def test_the_verdict_leads_with_plain_language(data):
+    content = rh.render_content(data)
+    lede = content[: content.index("This week&rsquo;s board")]
+    assert "borderline calls" in lede
+    assert "stop deliberating" in lede
+
+
+def test_weakest_position_is_named_for_the_reader(data):
+    assert "make it TE" in rh.render_content(data)
+
+
+def test_methodology_is_present_but_collapsed(data):
+    content = rh.render_content(data)
+    assert "<details" in content
+    assert "unknowable in advance" in content
+
+
+def test_provenance_hashes_are_published(data):
+    assert "player_stats/2024" in rh.render_content(data)
+
+
+def test_skill_against_the_baseline_is_stated(data):
+    """4.417 against a 4.591 baseline is a 3.8% improvement."""
+    assert "3.8% better than" in rh.render_content(data)

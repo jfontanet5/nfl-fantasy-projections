@@ -13,12 +13,22 @@ import typer
 from nflproj.config import get_settings
 from nflproj.evaluation.backtest import BacktestConfig, project_week, run_backtest
 from nflproj.evaluation.scorecard import build_scorecard
-from nflproj.features.calendar import build_team_calendar, latest_completed_week
+from nflproj.features.calendar import (
+    build_team_calendar,
+    current_season,
+    latest_completed_week,
+    next_projectable_week,
+)
 from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, UniversePolicy, build_panel
 from nflproj.ingest import nflverse as nv
 from nflproj.ingest.manifest import Manifest
 from nflproj.logging import configure_logging, get_logger
-from nflproj.predictors.baselines import HEADLINE_BASELINE_NAME, default_baselines
+from nflproj.predictors.baselines import (
+    HEADLINE_BASELINE_NAME,
+    PUBLISHED_PREDICTOR_NAME,
+    default_baselines,
+)
+from nflproj.report.html import build_report_data, render_document
 
 app = typer.Typer(
     add_completion=False,
@@ -83,6 +93,7 @@ def backtest(
             "raw_assets": {k: e.sha256 for k, e in sorted(manifest.entries().items())},
             "panel_rows": len(panel),
             "seasons_requested": years,
+            "played_rate": round(float(panel.loc[panel["projectable"], "played"].mean()), 4),
         },
     )
     path = card.write(settings.reports_dir, stem=stem)
@@ -116,6 +127,80 @@ def project(
     panel = build_panel(range(season - 1, season + 1), settings=settings)
     out = project_week(panel, chosen, season=season, week=week)
     typer.echo(out.head(top).to_markdown(index=False, floatfmt=".2f"))
+
+
+@app.command()
+def report(
+    season: Annotated[
+        int | None, typer.Argument(help="Season. Defaults to the one in progress.")
+    ] = None,
+    week: Annotated[
+        int | None,
+        typer.Option(help="Week the board covers. Defaults to the next unplayed week."),
+    ] = None,
+    predictor: Annotated[
+        str, typer.Option(help="Predictor whose projections the page publishes.")
+    ] = PUBLISHED_PREDICTOR_NAME,
+    scorecard: Annotated[
+        str, typer.Option(help="Scorecard stem under reports/ to read metrics from.")
+    ] = "scorecard",
+    out: Annotated[str, typer.Option(help="Output filename under reports/.")] = "index.html",
+) -> None:
+    """Render the public report page: this week's board plus the track record."""
+    chosen = next((p for p in default_baselines() if p.name == predictor), None)
+    if chosen is None:
+        names = sorted(p.name for p in default_baselines())
+        msg = f"unknown predictor {predictor!r}; available: {names}"
+        raise typer.BadParameter(msg)
+    settings = get_settings()
+    settings.ensure_dirs()
+
+    if season is None or week is None:
+        calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
+        season = season if season is not None else current_season(calendar)
+        if season is None:
+            msg = "no season has started yet; pass one explicitly"
+            raise typer.BadParameter(msg)
+        week = week if week is not None else next_projectable_week(calendar, season)
+        if week is None:
+            msg = f"no upcoming week in {season}; pass --week explicitly"
+            raise typer.BadParameter(msg)
+        log.info("report.derived_target", season=season, week=week)
+
+    if week < FIRST_PROJECTABLE_WEEK:
+        msg = f"week must be >= {FIRST_PROJECTABLE_WEEK}; week 1 is out of scope"
+        raise typer.BadParameter(msg)
+
+    scorecard_path = settings.reports_dir / f"{scorecard}.json"
+    if not scorecard_path.exists():
+        msg = f"no scorecard at {scorecard_path}; run `nflproj backtest` first"
+        raise typer.BadParameter(msg)
+
+    # A missing week is not fatal: the track record is still worth publishing
+    # when the upcoming slate cannot be projected yet.
+    projections = None
+    try:
+        panel = build_panel(range(season - 1, season + 1), settings=settings)
+        projections = project_week(panel, chosen, season=season, week=week)
+    except (ValueError, KeyError) as exc:
+        log.warning("report.no_projections", season=season, week=week, error=str(exc))
+
+    data = build_report_data(
+        scorecard_path=scorecard_path,
+        projections=projections,
+        season=season,
+        week=week,
+        predictor=predictor,
+    )
+    destination = settings.reports_dir / out
+    destination.write_text(render_document(data))
+    log.info(
+        "report.written",
+        path=str(destination),
+        bytes=destination.stat().st_size,
+        projected_players=0 if projections is None else len(projections),
+    )
+    typer.echo(f"wrote {destination}")
 
 
 @app.command()

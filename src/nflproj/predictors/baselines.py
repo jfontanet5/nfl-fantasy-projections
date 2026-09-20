@@ -227,6 +227,11 @@ class PositionMean:
 #: The baseline every scorecard is scored against.
 HEADLINE_BASELINE_NAME = "season_to_date_mean"
 
+#: The predictor whose numbers the public page shows. Distinct from the
+#: baseline on purpose: we publish our best estimator and report its skill
+#: against the baseline, rather than publishing the thing we are measured by.
+PUBLISHED_PREDICTOR_NAME = "ewma_hl3"
+
 
 def default_baselines() -> list[Predictor]:
     """The baseline slate carried on every scorecard."""

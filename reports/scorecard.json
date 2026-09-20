@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-20T02:54:40.989368+00:00",
+  "generated_at": "2026-09-20T13:37:31.655117+00:00",
   "schema_version": "1",
   "universe": "active_recent",
   "baseline": "season_to_date_mean",
@@ -48,7 +48,8 @@
       2023,
       2024,
       2025
-    ]
+    ],
+    "played_rate": 0.7461
   },
   "slices": {
     "overall": [

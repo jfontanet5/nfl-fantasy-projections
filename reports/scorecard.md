@@ -1,6 +1,6 @@
 # Projection scorecard
 
-- Generated: `2026-09-20T02:54:40.989368+00:00`
+- Generated: `2026-09-20T13:37:31.655117+00:00`
 - Universe: `active_recent`
 - Baseline: `season_to_date_mean`
 - Seasons: 2015-2025
