@@ -20,22 +20,35 @@ something honest to measure it against.
 Walk-forward over **2015–2025**, 181 weeks, 492,485 scored projections. Universe
 is `active_recent`; the named baseline is `season_to_date_mean`.
 
-| predictor | MAE | RMSE | Spearman | top-N hit | calib. slope | MAE skill |
-|---|---:|---:|---:|---:|---:|---:|
-| `ewma_hl3` | **4.417** | **6.331** | **0.596** | **0.522** | 0.846 | **+3.8%** |
-| `rolling_mean_4` | 4.541 | 6.621 | 0.572 | 0.503 | 0.744 | +1.1% |
-| `season_to_date_mean` *(baseline)* | 4.591 | 6.609 | 0.567 | 0.507 | 0.760 | — |
-| `season_to_date_mean_shrunk2` | 4.867 | 6.486 | 0.557 | 0.510 | **1.002** | −6.0% |
-| `last_game` | 4.935 | 7.659 | 0.562 | 0.471 | 0.535 | −7.5% |
-| `season_to_date_mean_played_only` | 5.140 | 7.052 | 0.493 | 0.500 | 0.706 | −11.9% |
-| `position_mean` *(floor)* | 6.129 | 7.742 | n/a | 0.250 | 0.919 | −33.5% |
+| predictor | MAE | Spearman | top-N hit | calib. slope | MAE skill |
+|---|---:|---:|---:|---:|---:|
+| `season_decayed_hl3_d0.5` *(published)* | **4.398** | **0.600** | 0.521 | 0.832 | **+4.2%** |
+| `ewma_hl3` | 4.417 | 0.596 | 0.522 | 0.846 | +3.8% |
+| `availability_weighted_hl3_w4_p1` | 4.460 | 0.586 | 0.520 | 0.874 | +2.9% |
+| `rolling_mean_4` | 4.541 | 0.572 | 0.503 | 0.744 | +1.1% |
+| `season_to_date_mean` *(baseline)* | 4.591 | 0.567 | 0.507 | 0.760 | — |
+| `season_to_date_mean_shrunk2` | 4.867 | 0.557 | 0.510 | **1.002** | −6.0% |
+| `last_game` | 4.935 | 0.562 | 0.471 | 0.535 | −7.5% |
+| `season_to_date_mean_played_only` | 5.140 | 0.493 | 0.500 | 0.706 | −11.9% |
+| `position_mean` *(floor)* | 6.129 | n/a | 0.250 | 0.919 | −33.5% |
 
 Three things worth reading off that table:
 
-**Recency beats accumulation.** A half-life-3 exponential mean beats the
-season-to-date average on every metric. Fantasy scoring is non-stationary
-within a season — roles change — and an average that weights week 2 as heavily
-as week 11 is fighting that.
+**Recency beats accumulation, and seasons are a real boundary.** A half-life-3
+exponential mean beats the season-to-date average on every metric. Discounting
+each prior season to half weight beats *that* — and wins in 10 of 11 seasons,
+the exception being 2015, where there is no prior season to discount. The gain
+is larger in weeks 2–4 (+0.8%) than overall (+0.4%), which is what the
+reasoning predicts: that is when last season is doing the most work.
+
+**A tested idea that lost.** Projecting `P(plays) × E[points | plays]` should
+fix a real defect — a resolved injury shouldn't suppress a player for months.
+It doesn't: every configuration in a 9-point sweep is worse than the blend, and
+the sweep is monotone toward *less* adjustment. A binary played/didn't-play
+rate discards the magnitudes a continuous series keeps. It is published as a
+negative result, because availability inferred from past play is
+backward-looking by construction — the right input is a point-in-time injury
+feed, which is the next thing to build.
 
 **Averaging only games a player *played* is actively harmful.** It scores 11.9%
 worse than the same estimator that counts missed weeks as zero, with a bias of
@@ -72,7 +85,7 @@ to happen, so `report/interpret.py` is a set of typed rules with a test per
 band.
 
 The page also plots the `by_week` slice: every scored week against the baseline,
-**166 of 181 beaten, worst week −2.0%**. An eleven-season average says how good
+**173 of 181 beaten, worst week −0.9%**. An eleven-season average says how good
 the system is; only the series shows the weeks it lost, which is the claim this
 project actually makes.
 
@@ -178,7 +191,7 @@ see.
 
 | Gate | Status |
 |---|---|
-| `pytest` | 205 tests (189 hermetic unit, 16 live-upstream) |
+| `pytest` | 233 tests (217 hermetic unit, 16 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
 | Coverage | 91% from unit tests alone, CI floor 85% |
