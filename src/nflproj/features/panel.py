@@ -245,14 +245,39 @@ def build_panel(
     panel["game_id"] = panel["game_id_cal"].fillna(panel["game_id"])
     panel = panel.drop(columns=["game_id_cal"])
 
+    # Whether the outcome of this week is actually known yet. A player-week in a
+    # week that has not finished has no result, and `fantasy_points` was filled
+    # with 0.0 above - correct for a player who sat out a completed week,
+    # catastrophic for a week nobody has played. Scoring those rows measures
+    # "everyone scored zero", which is not a fact about the world.
+    #
+    # Completeness is judged per week, not per game: scoring half a slate biases
+    # every metric toward whichever games happened to kick off early.
+    week_complete = (
+        calendar.groupby(["season", "week"], observed=True)["result"]
+        .apply(lambda s: bool(s.notna().all()))
+        .rename("week_complete")
+        .reset_index()
+    )
+    panel = panel.merge(week_complete, on=["season", "week"], how="left")
+    panel["week_complete"] = panel["week_complete"].fillna(value=False).astype(bool)
+
+    #: Safe to evaluate against: we claim to project it, and the games are done.
+    panel["scorable"] = panel["projectable"] & panel["week_complete"]
+
     panel = panel.sort_values(PANEL_KEY, kind="mergesort").reset_index(drop=True)
 
+    unscored = panel.loc[panel["projectable"] & ~panel["scorable"], ["season", "week"]]
     log.info(
         "panel.built",
         rows=len(panel),
         projectable_rows=int(panel["projectable"].sum()),
+        scorable_rows=int(panel["scorable"].sum()),
+        weeks_awaiting_results=int(unscored.drop_duplicates().shape[0]),
         seasons=f"{seasons[0]}-{seasons[-1]}",
-        played_rate=round(float(panel.loc[panel["projectable"], "played"].mean()), 4),
+        played_rate=round(float(panel.loc[panel["scorable"], "played"].mean()), 4)
+        if panel["scorable"].any()
+        else None,
         lookback_games=lookback_games,
     )
     return panel

@@ -72,6 +72,8 @@ def synthetic_panel(rng: np.random.Generator) -> pd.DataFrame:
                             "roof": "outdoors",
                             "surface": "grass",
                             "projectable": week >= 2,
+                            "week_complete": True,
+                            "scorable": week >= 2,
                         }
                     )
 

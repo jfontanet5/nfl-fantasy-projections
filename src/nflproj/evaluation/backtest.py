@@ -39,8 +39,37 @@ class BacktestConfig:
     seasons: tuple[int, ...] | None = None
 
 
+def _settled(panel: pd.DataFrame) -> pd.DataFrame:
+    """Rows whose outcome is known - everything safe to learn from.
+
+    Wider than :func:`_scorable`: week 1 belongs here. We never score week 1,
+    but it happened, and it is the history every week-2 projection is built on.
+    Dropping it from history is a silent accuracy regression, which is exactly
+    what an earlier version of this fix caused.
+
+    A panel built mid-season carries weeks that have not been played at all.
+    Their targets were filled with 0.0, so treating them as history would drag
+    every average toward zero. Older panels without the column predate
+    in-season runs and were fully settled by construction.
+    """
+    if "week_complete" not in panel.columns:
+        return panel
+    return panel[panel["week_complete"]]
+
+
+def _scorable(panel: pd.DataFrame) -> pd.DataFrame:
+    """Rows we evaluate against: projectable, and the games are finished.
+
+    Scoring a week nobody has played measures "everyone scored nothing", which
+    is not a fact about the world - it silently corrupts every aggregate.
+    """
+    if "scorable" not in panel.columns:
+        return panel[panel["projectable"]]
+    return panel[panel["scorable"]]
+
+
 def _target_weeks(panel: pd.DataFrame, config: BacktestConfig) -> list[tuple[int, int]]:
-    scorable = panel[panel["projectable"]]
+    scorable = _scorable(panel)
     if config.seasons is not None:
         scorable = scorable[scorable["season"].isin(config.seasons)]
     scorable = scorable[scorable["week"] >= config.min_week]
@@ -79,16 +108,17 @@ def run_backtest(
         raise ValueError(msg)
 
     panel = panel.sort_values(["season", "week"], kind="mergesort")
-    targets_by_week = dict(tuple(panel.groupby(["season", "week"], observed=True)))
+    settled = _settled(panel)
+    targets_by_week = dict(tuple(_scorable(panel).groupby(["season", "week"], observed=True)))
 
     rows: list[pd.DataFrame] = []
     for season, week in _target_weeks(panel, config):
         # Everything that had already happened when this week kicked off.
-        history = panel[
-            (panel["season"] < season) | ((panel["season"] == season) & (panel["week"] < week))
+        history = settled[
+            (settled["season"] < season)
+            | ((settled["season"] == season) & (settled["week"] < week))
         ]
         target_rows = targets_by_week[season, week]
-        target_rows = target_rows[target_rows["projectable"]]
         if target_rows.empty:
             continue
 
@@ -147,8 +177,12 @@ def project_week(
     is the point: the weekly job cannot drift away from what the backtest
     measured, because it is the same history rule applied by the same code.
     """
-    history = panel[
-        (panel["season"] < season) | ((panel["season"] == season) & (panel["week"] < week))
+    # History is restricted to settled weeks: an in-progress week has no results
+    # yet, and feeding its placeholder zeros to a predictor would poison every
+    # average it builds. Week 1 is settled and stays in.
+    settled = _settled(panel)
+    history = settled[
+        (settled["season"] < season) | ((settled["season"] == season) & (settled["week"] < week))
     ]
     targets = panel[(panel["season"] == season) & (panel["week"] == week) & panel["projectable"]]
     if targets.empty:

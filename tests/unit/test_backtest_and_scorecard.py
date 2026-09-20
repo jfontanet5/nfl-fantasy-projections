@@ -34,6 +34,50 @@ class _Constant:
         return pd.Series(self.value, index=targets.index, dtype="float64")
 
 
+class _HistoryProbe:
+    """Records the latest (season, week) it was ever shown as history."""
+
+    def __init__(self) -> None:
+        self.max_seen: tuple[int, int] | None = None
+
+    @property
+    def name(self) -> str:
+        return "probe"
+
+    def fit(self, history: pd.DataFrame) -> None:
+        if history.empty:
+            return
+        latest = history.sort_values(["season", "week"]).iloc[-1]
+        seen = (int(latest["season"]), int(latest["week"]))
+        self.max_seen = seen if self.max_seen is None else max(self.max_seen, seen)
+
+    def predict(self, targets: pd.DataFrame) -> pd.Series:
+        return pd.Series(0.0, index=targets.index)
+
+
+class _HistoryWeeks:
+    """Records every (season, week) the predictor was shown as history.
+
+    Season and week together: a bare week number pools 2020's settled week 7
+    with 2021's unplayed one, which makes the assertion meaningless.
+    """
+
+    def __init__(self) -> None:
+        self.weeks_seen: set[tuple[int, int]] = set()
+
+    @property
+    def name(self) -> str:
+        return "history-weeks"
+
+    def fit(self, history: pd.DataFrame) -> None:
+        self.weeks_seen |= {
+            (int(s), int(w)) for s, w in history[["season", "week"]].drop_duplicates().to_numpy()
+        }
+
+    def predict(self, targets: pd.DataFrame) -> pd.Series:
+        return pd.Series(0.0, index=targets.index)
+
+
 class _Misaligned(_Constant):
     def predict(self, targets: pd.DataFrame) -> pd.Series:  # noqa: ARG002
         return pd.Series([1.0, 2.0], index=[0, 1], dtype="float64")
@@ -182,3 +226,80 @@ def test_markdown_summarises_the_weekly_slice_instead_of_tabulating_it(synthetic
     assert "|" in md.split("## overall")[1][:400]
     # And the summary is far shorter than the table would have been.
     assert len(md) < len(card.to_json())
+
+
+# ------------------------------------------------- weeks that have not happened
+
+
+def _panel_with_unplayed_tail(panel: pd.DataFrame) -> pd.DataFrame:
+    """Mark 2021 weeks 7-8 as scheduled but not yet played."""
+    out = panel.copy()
+    unplayed = (out["season"] == 2021) & (out["week"] >= 7)
+    out["week_complete"] = ~unplayed
+    out["scorable"] = out["projectable"] & out["week_complete"]
+    # Their outcomes are placeholders, exactly as build_panel would leave them.
+    out.loc[unplayed, "fantasy_points"] = 0.0
+    out.loc[unplayed, "played"] = False
+    return out
+
+
+def test_backtest_never_scores_an_unplayed_week(synthetic_panel):
+    panel = _panel_with_unplayed_tail(synthetic_panel)
+    out = run_backtest(panel, [_Constant(5.0)])
+    scored = set(zip(out["season"], out["week"], strict=True))
+    assert not [w for w in scored if w[0] == 2021 and w[1] >= 7]
+    assert (2021, 6) in scored
+
+
+def test_unplayed_weeks_do_not_leak_into_history(synthetic_panel):
+    """Placeholder zeros would drag every historical average toward zero."""
+    panel = _panel_with_unplayed_tail(synthetic_panel)
+    recorder = _HistoryProbe()
+    run_backtest(panel, [recorder], config=BacktestConfig(seasons=(2021,)))
+    assert recorder.max_seen is not None
+    assert recorder.max_seen < (2021, 7)
+
+
+def test_an_in_progress_season_does_not_change_settled_results(synthetic_panel):
+    """Adding unplayed weeks must not move a single previously scored number."""
+    settled = run_backtest(synthetic_panel, [_Constant(5.0)])
+    with_tail = run_backtest(_panel_with_unplayed_tail(synthetic_panel), [_Constant(5.0)])
+
+    key = ["season", "week", "player_id"]
+    common = settled.merge(with_tail, on=key, suffixes=("_a", "_b"))
+    assert len(common) == len(with_tail)
+    pd.testing.assert_series_equal(
+        common["fantasy_points_a"], common["fantasy_points_b"], check_names=False
+    )
+
+
+def test_project_week_still_projects_an_unplayed_week(synthetic_panel):
+    """Not scorable must not mean not projectable - that is the whole point."""
+    panel = _panel_with_unplayed_tail(synthetic_panel)
+    out = project_week(panel, SeasonToDateMean(), season=2021, week=7)
+    assert len(out) > 0
+    assert out["prediction"].notna().all()
+
+
+def test_week_one_stays_in_history(synthetic_panel):
+    """Week 1 is never scored but always learned from.
+
+    Filtering history by `scorable` instead of `week_complete` silently drops
+    it, which measurably degrades every week-2 projection. An earlier version
+    of the unplayed-week fix did exactly that, and it only surfaced because a
+    previously computed aggregate moved.
+    """
+    recorder = _HistoryWeeks()
+    run_backtest(synthetic_panel, [recorder], config=BacktestConfig(seasons=(2021,)))
+    assert (2021, 1) in recorder.weeks_seen, "week 1 results must reach the predictor"
+
+
+def test_unplayed_weeks_stay_out_of_history_but_week_one_does_not(synthetic_panel):
+    panel = _panel_with_unplayed_tail(synthetic_panel)
+    recorder = _HistoryWeeks()
+    run_backtest(panel, [recorder], config=BacktestConfig(seasons=(2021,)))
+    assert (2021, 1) in recorder.weeks_seen
+    assert (2021, 7) not in recorder.weeks_seen
+    assert (2021, 8) not in recorder.weeks_seen
+    # The prior season's weeks 7-8 are settled and must still be learned from.
+    assert (2020, 7) in recorder.weeks_seen

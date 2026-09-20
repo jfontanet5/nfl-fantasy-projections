@@ -177,3 +177,46 @@ def test_apply_universe_played_drops_only_non_players(monkeypatch):
     active = pnl.apply_universe(p, pnl.UniversePolicy.ACTIVE_RECENT)
     played = pnl.apply_universe(p, pnl.UniversePolicy.PLAYED)
     assert len(played) == len(active) - 1
+
+
+# ------------------------------------------------- weeks that have not happened
+
+
+def _calendar_with_unplayed_weeks() -> pd.DataFrame:
+    """Weeks 1-2 finished, week 3 scheduled but not played."""
+    cal = _calendar()
+    cal.loc[cal["week"] == 3, "result"] = None
+    return cal
+
+
+def test_unplayed_weeks_are_projectable_but_not_scorable(monkeypatch):
+    """The bug this guards: a week nobody has played was being scored as if
+    every player had scored zero, which silently corrupts every aggregate."""
+    monkeypatch.setattr(
+        pnl, "build_team_calendar", lambda *_a, **_k: _calendar_with_unplayed_weeks()
+    )
+    p = pnl.build_panel([2024])
+
+    week3 = p[p["week"] == 3]
+    assert week3["projectable"].all(), "we still want to publish a projection for it"
+    assert not week3["scorable"].any(), "but its outcome is not known yet"
+
+    week2 = p[p["week"] == 2]
+    assert week2["scorable"].all()
+
+
+def test_a_partially_played_week_is_not_scorable(monkeypatch):
+    """Half a slate biases every metric toward the early kickoffs."""
+    cal = _calendar()
+    # One team's week-3 game is done, the other's is not.
+    cal.loc[(cal["week"] == 3) & (cal["team"] == "BBB"), "result"] = None
+    monkeypatch.setattr(pnl, "build_team_calendar", lambda *_a, **_k: cal)
+
+    p = pnl.build_panel([2024])
+    assert not p.loc[p["week"] == 3, "scorable"].any()
+
+
+def test_week_one_is_never_scorable_even_when_complete(monkeypatch):
+    monkeypatch.setattr(pnl, "build_team_calendar", lambda *_a, **_k: _calendar())
+    p = pnl.build_panel([2024])
+    assert not p.loc[p["week"] == 1, "scorable"].any()
