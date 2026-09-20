@@ -773,8 +773,15 @@ PAGE_TITLE: Final = "The Sunday Board"
 #: it the browser rejects the value as malformed and blocks the script, which is
 #: the same silent failure an outright wrong hash causes. `_chart_lib_tag`
 #: rejects a value that does not look like an SRI hash rather than emit it.
+#:
+#: A base64 SHA-512 is 88 characters, so the value sits in parentheses on its own
+#: line to clear the line limit. Keep it as one unbroken string: a hash is a
+#: single atomic token, and splitting it invites a transcription error that would
+#: block the script exactly as silently as no hash at all.
 CHART_LIB_VERSION: Final = "4.4.4"
-CHART_LIB_SRI: Final[str | None] = None
+CHART_LIB_SRI: Final[str | None] = (
+    "sha512-c7v2mEghMrX9YKC1iSb93skFX4CVpTvFJxTiEek0DDQZc2zq/WsnlmeBARTTBr/M3Pzd9RwLZ/6ePHPFRYPldA=="
+)
 
 #: `<algorithm>-<base64 digest>`, per the Subresource Integrity spec.
 _SRI_PATTERN: Final = re.compile(r"^sha(256|384|512)-[A-Za-z0-9+/]+={0,2}$")
@@ -789,14 +796,17 @@ def _chart_lib_tag() -> str:
             silently stop the chart from loading on the published page.
     """
     src = f"https://cdnjs.cloudflare.com/ajax/libs/Chart.js/{CHART_LIB_VERSION}/chart.umd.min.js"
-    if CHART_LIB_SRI is not None and not _SRI_PATTERN.match(CHART_LIB_SRI):
+    # Read once into a local: the value is read at call time so tests can patch
+    # it, and a local narrows cleanly where a module global does not.
+    sri = CHART_LIB_SRI
+    if sri is not None and not _SRI_PATTERN.match(sri):
         msg = (
-            f"CHART_LIB_SRI={CHART_LIB_SRI!r} is not a valid Subresource Integrity "
+            f"CHART_LIB_SRI={sri!r} is not a valid Subresource Integrity "
             "hash. It must look like 'sha512-<base64>' - the bare output of "
             "`openssl base64` is missing the 'sha512-' prefix."
         )
         raise ValueError(msg)
-    integrity = f' integrity="{CHART_LIB_SRI}"' if CHART_LIB_SRI else ""
+    integrity = f' integrity="{sri}"' if sri else ""
     return (
         f'<script src="{src}"{integrity} crossorigin="anonymous" '
         'referrerpolicy="no-referrer" defer></script>'
