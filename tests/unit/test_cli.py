@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
+import uvicorn
 from typer.testing import CliRunner
 
 from nflproj import cli
@@ -190,3 +192,31 @@ def test_headline_metrics_read_the_predictors_own_row(tmp_path):
     assert metrics["mae"] == pytest.approx(4.4)
     assert metrics["mae_skill"] == pytest.approx(0.04)
     assert "rmse" not in metrics
+
+
+def test_serve_does_not_clobber_a_configured_bundle_dir(monkeypatch):
+    """The image sets NFLPROJ_BUNDLE_DIR=/bundle; the CLI default must not win.
+
+    It did, once. `--bundle` defaulted to the relative string "bundle" and the
+    command wrote it into the environment unconditionally, so the absolute path
+    baked into the image was replaced by one resolved against the container's
+    working directory. The pod started, reported itself not-ready forever, and
+    the Kubernetes rollout timed out. Nothing but a real cluster could catch it,
+    because the bug lives exactly where an env var and a CLI default meet.
+    """
+    monkeypatch.setenv("NFLPROJ_BUNDLE_DIR", "/bundle")
+    monkeypatch.setattr(uvicorn, "run", lambda *_a, **_k: None)
+
+    result = runner.invoke(cli.app, ["serve"])
+    assert result.exit_code == 0
+    assert os.environ["NFLPROJ_BUNDLE_DIR"] == "/bundle"
+
+
+def test_serve_flag_overrides_the_environment(monkeypatch):
+    """Still an override when asked for explicitly - just not by default."""
+    monkeypatch.setenv("NFLPROJ_BUNDLE_DIR", "/bundle")
+    monkeypatch.setattr(uvicorn, "run", lambda *_a, **_k: None)
+
+    result = runner.invoke(cli.app, ["serve", "--bundle", "/elsewhere"])
+    assert result.exit_code == 0
+    assert os.environ["NFLPROJ_BUNDLE_DIR"] == "/elsewhere"

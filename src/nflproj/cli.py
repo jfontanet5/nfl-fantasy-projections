@@ -353,7 +353,10 @@ def snapshot(
 def serve(
     host: Annotated[str, typer.Option(help="Bind address.")] = "0.0.0.0",
     port: Annotated[int, typer.Option(help="Bind port.")] = 8000,
-    bundle: Annotated[str, typer.Option(help="Directory holding the bundle to serve.")] = "bundle",
+    bundle: Annotated[
+        str | None,
+        typer.Option(help="Directory holding the bundle. Overrides NFLPROJ_BUNDLE_DIR."),
+    ] = None,
     workers: Annotated[int, typer.Option(help="Worker processes.")] = 1,
 ) -> None:
     """Serve the published bundle over HTTP.
@@ -361,14 +364,29 @@ def serve(
     Binds all interfaces by default because the only place this runs is inside
     a container, where binding loopback would make the service unreachable from
     anything outside the pod.
+
+    ``--bundle`` is an override, and defaults to *unset* rather than to a path.
+    An earlier version defaulted it to the relative string ``"bundle"`` and
+    wrote that into the environment unconditionally, which silently replaced
+    the image's ``NFLPROJ_BUNDLE_DIR=/bundle`` with a path resolved against the
+    working directory. The container started, stayed not-ready forever, and the
+    rollout timed out - a failure no unit test could see, because it only
+    exists where an environment variable and a CLI default meet.
     """
     # Imported here, not at module scope: uvicorn pulls in a sizeable async
     # stack, and `nflproj ingest` in a nightly job should not pay for a web
     # server it never starts.
     import uvicorn  # noqa: PLC0415
 
-    os.environ["NFLPROJ_BUNDLE_DIR"] = bundle
-    log.info("serve.starting", host=host, port=port, bundle=bundle, workers=workers)
+    if bundle is not None:
+        os.environ["NFLPROJ_BUNDLE_DIR"] = bundle
+    log.info(
+        "serve.starting",
+        host=host,
+        port=port,
+        bundle=os.environ.get("NFLPROJ_BUNDLE_DIR", "bundle"),
+        workers=workers,
+    )
     uvicorn.run(
         "nflproj.serving.app:app",
         host=host,
