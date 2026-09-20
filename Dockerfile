@@ -9,10 +9,13 @@ FROM python:3.12-slim-bookworm AS builder
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv
 
+# UV_PROJECT_ENVIRONMENT, not VIRTUAL_ENV, is what `uv sync` honours. Setting
+# VIRTUAL_ENV alone silently installs into ./.venv instead, leaving /opt/venv
+# empty - the image then builds cleanly and fails on first run.
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
-    VIRTUAL_ENV=/opt/venv
+    UV_PROJECT_ENVIRONMENT=/opt/venv
 
 WORKDIR /build
 
@@ -20,12 +23,17 @@ WORKDIR /build
 # the lockfile itself changes - source edits do not trigger a reinstall.
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv venv /opt/venv && \
     uv sync --locked --no-dev --no-install-project
 
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
+
+# Prove the entrypoint exists and imports before shipping the layer. A broken
+# environment is then a build failure with a clear cause, rather than an image
+# that passes `docker build` and dies on `docker run`.
+RUN /opt/venv/bin/nflproj --help > /dev/null && \
+    /opt/venv/bin/python -c "import nflproj.cli, pandas, pyarrow, duckdb"
 
 # ---------------------------------------------------------------- runtime
 FROM python:3.12-slim-bookworm AS runtime

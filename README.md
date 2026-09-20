@@ -156,9 +156,12 @@ see.
 | Coverage | 93% from unit tests alone, CI floor 85% |
 | Container | multi-stage, non-root; CI builds it and asserts it runs unprivileged |
 
-> The container has not yet been built locally — the environment this was
-> developed in blocks Docker Hub, so the first real build happens in CI. Treat
-> the Dockerfile as unverified until the `container` job goes green.
+> The container cannot be built in the environment this was developed in
+> (Docker Hub is blocked), so CI is its only verification. The first CI run
+> caught a real bug this way: `uv sync` honours `UV_PROJECT_ENVIRONMENT`, not
+> `VIRTUAL_ENV`, so the image built cleanly with an empty virtualenv and died
+> on first run. The builder now asserts the entrypoint runs before shipping the
+> layer, turning that class of failure into a build error.
 
 CI separates **unit** tests (hermetic, no network, gate every PR) from
 **contract** tests (hit live nflverse), so an upstream outage reads as an
