@@ -150,10 +150,10 @@ see.
 
 | Gate | Status |
 |---|---|
-| `pytest` | 97 tests |
+| `pytest` | 139 tests (123 hermetic unit, 16 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
-| Coverage | 87%, CI floor 85% |
+| Coverage | 93% from unit tests alone, CI floor 85% |
 | Container | multi-stage, non-root; CI builds it and asserts it runs unprivileged |
 
 > The container has not yet been built locally — the environment this was

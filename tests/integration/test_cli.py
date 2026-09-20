@@ -1,8 +1,8 @@
-"""CLI smoke tests.
+"""End-to-end CLI runs against live upstream data.
 
-The commands are thin, so these check wiring rather than logic: that each one
-is reachable, that the end-to-end path produces a scorecard on disk, and that a
-bad predictor name fails with a useful message instead of a traceback.
+Argument parsing and pre-flight validation are unit-tested in
+``tests/unit/test_cli.py``; what is left here is the part that genuinely needs
+the network - that a real backtest produces a scorecard on disk with provenance.
 """
 
 from __future__ import annotations
@@ -16,36 +16,6 @@ from nflproj.cli import app
 from nflproj.config import reset_settings
 
 runner = CliRunner()
-
-
-def test_help_lists_every_command():
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    for command in ("ingest", "backtest", "project", "status"):
-        assert command in result.stdout
-
-
-@pytest.mark.parametrize("command", ["ingest", "backtest", "project", "status"])
-def test_each_command_has_help(command):
-    result = runner.invoke(app, [command, "--help"])
-    assert result.exit_code == 0
-
-
-def test_unknown_predictor_fails_before_any_download(monkeypatch, tmp_path):
-    """Argument validation must precede ingestion, or a typo costs two seasons."""
-    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
-    result = runner.invoke(app, ["project", "2024", "--week", "5", "--predictor", "nope"])
-    assert result.exit_code != 0
-    assert "unknown predictor" in result.output.lower()
-    assert not (tmp_path / "raw").exists(), "the command downloaded data before validating"
-
-
-def test_week_one_is_refused(monkeypatch, tmp_path):
-    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
-    result = runner.invoke(app, ["project", "2024", "--week", "1"])
-    assert result.exit_code != 0
-    assert "out of scope" in result.output.lower()
-    assert not (tmp_path / "raw").exists()
 
 
 @pytest.mark.network
