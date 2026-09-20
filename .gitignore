@@ -26,5 +26,11 @@ data/cache/
 # report in place, so a snapshot that is not committed the day it is taken is
 # gone. Do not add archive/ here.
 !archive/
+
+# The bundle is derived - `nflproj publish` rebuilds it from data and code - so
+# its contents are not committed. The directory itself is kept so `docker build`
+# always has something to copy.
+bundle/*
+!bundle/.gitkeep
 .DS_Store
 .env

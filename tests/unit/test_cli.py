@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from typer.testing import CliRunner
 
@@ -28,12 +30,22 @@ def test_season_range_parsing(spec, expected):
 def test_help_lists_every_command():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    for command in ("ingest", "backtest", "project", "report", "snapshot", "status"):
+    for command in (
+        "ingest",
+        "backtest",
+        "project",
+        "report",
+        "snapshot",
+        "publish",
+        "serve",
+        "status",
+    ):
         assert command in result.output
 
 
 @pytest.mark.parametrize(
-    "command", ["ingest", "backtest", "project", "report", "snapshot", "status"]
+    "command",
+    ["ingest", "backtest", "project", "report", "snapshot", "publish", "serve", "status"],
 )
 def test_each_command_has_help(command):
     result = runner.invoke(cli.app, [command, "--help"])
@@ -118,3 +130,63 @@ def test_snapshot_reports_whether_the_report_changed(monkeypatch, tmp_path):
     assert captured["season"] == 2026
     assert "433 rows" in result.output
     assert "unchanged" in result.output
+
+
+def test_publish_rejects_an_unknown_predictor_before_any_download(monkeypatch, tmp_path):
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the calendar must not be built before validation")
+
+    monkeypatch.setattr(cli, "build_team_calendar", _explode)
+
+    result = runner.invoke(cli.app, ["publish", "2026", "--predictor", "nope"])
+    assert result.exit_code != 0
+    assert "unknown predictor" in result.output.lower()
+
+
+def test_publish_refuses_week_one(monkeypatch, tmp_path):
+    """The leakage rule reaches the artifact, not just the report."""
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "build_team_calendar", lambda *_a, **_k: "calendar")
+    monkeypatch.setattr(cli, "current_season", lambda *_a, **_k: 2026)
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("no panel should be built for an out-of-scope week")
+
+    monkeypatch.setattr(cli, "build_panel", _explode)
+
+    result = runner.invoke(cli.app, ["publish", "2026", "--week", "1"])
+    assert result.exit_code != 0
+    assert "out of scope" in result.output.lower()
+
+
+def test_headline_metrics_are_absent_rather_than_zero_without_a_scorecard(tmp_path):
+    """A bundle claiming no metrics is honest; one claiming zeros is not."""
+    assert cli._headline_metrics(tmp_path / "nothing.json", "any") == {}
+
+
+def test_headline_metrics_are_absent_when_the_predictor_was_not_scored(tmp_path):
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps({"slices": {"overall": [{"predictor": "other", "mae": 1.0}]}}))
+    assert cli._headline_metrics(path, "season_decayed_hl3_d0.5") == {}
+
+
+def test_headline_metrics_read_the_predictors_own_row(tmp_path):
+    path = tmp_path / "scorecard.json"
+    path.write_text(
+        json.dumps(
+            {
+                "slices": {
+                    "overall": [
+                        {"predictor": "other", "mae": 9.9, "spearman": 0.1},
+                        {"predictor": "mine", "mae": 4.4, "spearman": 0.6, "mae_skill": 0.04},
+                    ]
+                }
+            }
+        )
+    )
+    metrics = cli._headline_metrics(path, "mine")
+    assert metrics["mae"] == pytest.approx(4.4)
+    assert metrics["mae_skill"] == pytest.approx(0.04)
+    assert "rmse" not in metrics

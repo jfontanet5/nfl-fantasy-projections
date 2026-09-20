@@ -6,6 +6,9 @@ testing lives in a module, not here.
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -21,7 +24,7 @@ from nflproj.features.calendar import (
 )
 from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, UniversePolicy, build_panel
 from nflproj.ingest import nflverse as nv
-from nflproj.ingest.archive import INJURIES, Archive, snapshot_season
+from nflproj.ingest.archive import INJURIES, Archive, first_kickoff, snapshot_season
 from nflproj.ingest.manifest import Manifest
 from nflproj.logging import configure_logging, get_logger
 from nflproj.predictors.baselines import (
@@ -30,6 +33,7 @@ from nflproj.predictors.baselines import (
     default_baselines,
 )
 from nflproj.report.html import build_report_data, render_document
+from nflproj.serving.bundle import write_bundle
 
 app = typer.Typer(
     add_completion=False,
@@ -205,6 +209,114 @@ def report(
 
 
 @app.command()
+def publish(
+    season: Annotated[
+        int | None, typer.Argument(help="Season. Defaults to the one in progress.")
+    ] = None,
+    week: Annotated[
+        int | None, typer.Option(help="Week to publish. Defaults to the next unplayed week.")
+    ] = None,
+    predictor: Annotated[
+        str, typer.Option(help="Predictor whose board is published.")
+    ] = PUBLISHED_PREDICTOR_NAME,
+    scorecard: Annotated[
+        str, typer.Option(help="Scorecard stem under reports/ to read the track record from.")
+    ] = "scorecard",
+    out: Annotated[str, typer.Option(help="Directory to write the bundle into.")] = "bundle",
+) -> None:
+    """Write a versioned projection bundle for the serving layer to load.
+
+    The board for a week is computed once, before that week kicks off, and is
+    then a fact about the week rather than a live computation. So what gets
+    served is an artifact, and this is what makes it: the numbers, plus enough
+    provenance to argue they are what they claim to be.
+
+    The bundle's version is a hash of its contents, so rebuilding from the same
+    data yields the same version and "what is production actually serving" is
+    answerable by comparison rather than by trust.
+    """
+    chosen = next((p for p in default_baselines() if p.name == predictor), None)
+    if chosen is None:
+        names = sorted(p.name for p in default_baselines())
+        msg = f"unknown predictor {predictor!r}; available: {names}"
+        raise typer.BadParameter(msg)
+
+    settings = get_settings()
+    settings.ensure_dirs()
+    calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
+
+    season = season if season is not None else current_season(calendar)
+    if season is None:
+        msg = "no season has started yet; pass one explicitly"
+        raise typer.BadParameter(msg)
+    week = week if week is not None else next_projectable_week(calendar, season)
+    if week is None:
+        msg = f"no upcoming week in {season}; pass --week explicitly"
+        raise typer.BadParameter(msg)
+    if week < FIRST_PROJECTABLE_WEEK:
+        msg = f"week must be >= {FIRST_PROJECTABLE_WEEK}; week 1 is out of scope"
+        raise typer.BadParameter(msg)
+
+    panel = build_panel(range(season - 1, season + 1), settings=settings)
+    projections = project_week(panel, chosen, season=season, week=week)
+
+    manifest = Manifest(settings.raw_dir)
+    metadata = write_bundle(
+        Path(out),
+        projections,
+        predictor=predictor,
+        season=season,
+        week=week,
+        # The week's first kickoff: after this the board is a record of what was
+        # claimed, not a forecast, and the API says so rather than letting a
+        # caller present a settled week as advice.
+        valid_from=first_kickoff(calendar, season, week),
+        raw_assets={k: e.sha256 for k, e in sorted(manifest.entries().items())},
+        metrics=_headline_metrics(settings.reports_dir / f"{scorecard}.json", predictor),
+        baseline=HEADLINE_BASELINE_NAME,
+    )
+    typer.echo(
+        f"bundle {metadata.version}  {metadata.predictor}  "
+        f"{metadata.season} week {metadata.week}  {metadata.players} players  -> {out}"
+    )
+    if metadata.superseded():
+        # Late, not wrong. `project_week` only ever reads settled weeks, so this
+        # board is bit-identical to what a timely run would have produced - the
+        # numbers are uncontaminated, they are just published after the fact.
+        # Loud anyway, because a job that quietly starts publishing yesterday's
+        # week is the kind of drift nobody notices until someone acts on it.
+        log.warning(
+            "publish.superseded",
+            season=metadata.season,
+            week=metadata.week,
+            valid_from=metadata.valid_from,
+        )
+        typer.echo(
+            f"warning: week {metadata.week} kicked off at {metadata.valid_from}. "
+            "The board is uncontaminated (history is restricted to settled weeks) "
+            "but it is a record of what was claimed, not a forecast."
+        )
+
+
+def _headline_metrics(scorecard_path: Path, predictor: str) -> dict[str, float]:
+    """The predictor's measured track record, for the bundle to carry.
+
+    Absent rather than faked when no scorecard exists yet: a bundle that claims
+    no metrics is honest, one that claims zeros is not.
+    """
+    if not scorecard_path.exists():
+        log.warning("publish.no_scorecard", path=str(scorecard_path))
+        return {}
+    payload = json.loads(scorecard_path.read_text())
+    rows = [r for r in payload.get("slices", {}).get("overall", []) if r["predictor"] == predictor]
+    if not rows:
+        log.warning("publish.predictor_not_scored", predictor=predictor)
+        return {}
+    keep = ("mae", "rmse", "spearman", "top_n_hit_rate", "calibration_slope", "mae_skill")
+    return {k: float(rows[0][k]) for k in keep if rows[0].get(k) is not None}
+
+
+@app.command()
 def snapshot(
     season: Annotated[
         int | None, typer.Argument(help="Season to file under. Defaults to the one in progress.")
@@ -234,6 +346,36 @@ def snapshot(
     typer.echo(
         f"{observation.asset} {observation.season}: {observation.rows} rows, "
         f"sha256 {observation.sha256[:12]} ({state})"
+    )
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Bind address.")] = "0.0.0.0",
+    port: Annotated[int, typer.Option(help="Bind port.")] = 8000,
+    bundle: Annotated[str, typer.Option(help="Directory holding the bundle to serve.")] = "bundle",
+    workers: Annotated[int, typer.Option(help="Worker processes.")] = 1,
+) -> None:
+    """Serve the published bundle over HTTP.
+
+    Binds all interfaces by default because the only place this runs is inside
+    a container, where binding loopback would make the service unreachable from
+    anything outside the pod.
+    """
+    # Imported here, not at module scope: uvicorn pulls in a sizeable async
+    # stack, and `nflproj ingest` in a nightly job should not pay for a web
+    # server it never starts.
+    import uvicorn  # noqa: PLC0415
+
+    os.environ["NFLPROJ_BUNDLE_DIR"] = bundle
+    log.info("serve.starting", host=host, port=port, bundle=bundle, workers=workers)
+    uvicorn.run(
+        "nflproj.serving.app:app",
+        host=host,
+        port=port,
+        workers=workers,
+        access_log=False,  # The app's own middleware logs structured access lines.
+        log_config=None,
     )
 
 

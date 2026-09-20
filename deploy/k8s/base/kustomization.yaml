@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# The base is what would go to a real cluster. The kind overlay changes exactly
+# one thing - the image reference - so what CI proves is the manifest that would
+# actually be deployed, not a simplified cousin of it.
+resources:
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+
+images:
+  - name: ghcr.io/jfontanet5/nfl-fantasy-projections
+    newTag: latest

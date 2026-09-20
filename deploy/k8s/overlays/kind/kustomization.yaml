@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Point at the locally built image instead of the registry. Everything else -
+# probes, resources, securityContext, the rollout strategy, the disruption
+# budget - is the base verbatim, which is the point: CI exercises the manifest
+# that would go to a real cluster rather than a stripped-down stand-in.
+images:
+  - name: ghcr.io/jfontanet5/nfl-fantasy-projections
+    newName: nflproj
+    newTag: ci
+
+patches:
+  - target:
+      kind: Deployment
+      name: nflproj-api
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never

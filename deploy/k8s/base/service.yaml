@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nflproj-api
+  labels:
+    app.kubernetes.io/name: nflproj
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nflproj
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nflproj-api
+spec:
+  # Two replicas, at least one always up. Without this a node drain can take
+  # both pods at once, and the outage looks like an application fault.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nflproj
+      app.kubernetes.io/component: api

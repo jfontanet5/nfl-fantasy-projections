@@ -38,6 +38,9 @@ RUN /opt/venv/bin/nflproj --help > /dev/null && \
 # ---------------------------------------------------------------- runtime
 FROM python:3.12-slim-bookworm AS runtime
 
+# Stamped into /version so a running pod can name the commit it was built from.
+ARG GIT_SHA=unknown
+
 LABEL org.opencontainers.image.title="nflproj" \
       org.opencontainers.image.description="Weekly NFL fantasy point projections with a published scorecard" \
       org.opencontainers.image.source="https://github.com/jfontanet5/nfl-fantasy-projections" \
@@ -54,15 +57,30 @@ ENV VIRTUAL_ENV=/opt/venv \
     PYTHONDONTWRITEBYTECODE=1 \
     NFLPROJ_LOG_JSON=1 \
     NFLPROJ_DATA_DIR=/data \
-    NFLPROJ_REPORTS_DIR=/reports
+    NFLPROJ_REPORTS_DIR=/reports \
+    NFLPROJ_BUNDLE_DIR=/bundle \
+    NFLPROJ_GIT_SHA=${GIT_SHA}
 
 COPY --from=builder --chown=nflproj:nflproj /opt/venv /opt/venv
 
 RUN mkdir -p /data /reports && chown -R nflproj:nflproj /data /reports
 VOLUME ["/data", "/reports"]
 
+# The model artifact travels inside the image, so the image tag *is* the model
+# version and a rollback is redeploying last week's tag. A weekly batch cadence
+# makes that the boring choice: there is no model store to be unavailable, no
+# runtime fetch to fail, and nothing to drift between what was tested and what
+# is serving.
+#
+# `bundle/` always exists in the build context (it is kept with a .gitkeep), so
+# a build without `nflproj publish` still succeeds - the resulting image simply
+# comes up not-ready and says why, which is the correct behaviour for a serving
+# container that has nothing to serve.
+COPY --chown=nflproj:nflproj bundle/ /bundle/
+
 USER nflproj
 WORKDIR /home/nflproj
+EXPOSE 8000
 
 # Fails if the package or any dependency did not make it into the image.
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \

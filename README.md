@@ -176,6 +176,8 @@ uv run nflproj backtest --seasons 2015-2025        # walk-forward + scorecard
 uv run nflproj project 2026 --week 3               # project an upcoming week
 uv run nflproj report                              # render the public page
 uv run nflproj snapshot                            # record today's injury report
+uv run nflproj publish                             # write a versioned model bundle
+uv run nflproj serve                               # serve it over HTTP
 ```
 
 `report` takes no arguments by default: the season and week come from the
@@ -199,6 +201,9 @@ ingest/      nflverse release mirror + SHA-256 provenance manifest
 features/    team calendar (schedule-derived) -> player-week panel + universe
 predictors/  Predictor protocol; baselines implementing it
 evaluation/  walk-forward harness -> metrics -> versioned scorecard
+report/      metric -> plain-language rules; static page generator
+serving/     content-hashed model bundle + the FastAPI service that reads it
+deploy/k8s/  base manifests + a kind overlay CI actually deploys
 ```
 
 Data flows one way. Each stage is independently testable and none of them can
@@ -220,15 +225,62 @@ see.
 
 ---
 
+## Serving
+
+```bash
+docker run --rm -p 8000:8000 ghcr.io/jfontanet5/nfl-fantasy-projections:latest \
+  serve --port 8000
+
+curl localhost:8000/readyz
+curl "localhost:8000/projections/2026/3?position=RB&limit=10"
+```
+
+`nflproj publish` writes a **bundle**: the week's board plus everything needed
+to argue it is what it claims to be — the predictor, the week, the week's first
+kickoff, the SHA-256 of every upstream file behind it, and the predictor's
+measured metrics. Its version is a hash of those contents, so rebuilding from
+the same data gives the same version and *"what is production serving"* is
+answerable by comparison rather than by trust. Loading verifies that hash; a
+bundle that fails refuses to load.
+
+The bundle is baked into the image, so **the tag is the model version** and a
+rollback is redeploying last week's tag. That is a real trade — updating the
+model means redeploying — and it is the right one at a weekly cadence: no model
+store to be unavailable, no runtime fetch to fail, nothing that can drift
+between what CI tested and what is serving.
+
+Every response carries its provenance, including `superseded`, which flips to
+true once the covered week has kicked off. The board stays readable; the caller
+is simply told it is now a record rather than a forecast.
+
+**Liveness and readiness are different endpoints, on purpose.** `/healthz` is
+true whenever the process can answer. `/readyz` is false until a bundle has
+loaded *and* verified its content hash. Pointing both at one endpoint — the
+usual shortcut — fails in two opposite directions at once: restarting pods that
+are merely still loading, and routing traffic to pods holding a corrupt bundle.
+
+CI does not just lint the Kubernetes manifests. It stands up a **kind** cluster,
+applies them through an overlay that changes only the image reference, waits for
+a rollout that can only go green if the integrity check passed, port-forwards
+the Service, and asserts that a real projection comes back with a non-zero score
+and intact provenance. Then it pushes to GHCR — only from `main`, only after
+that passed.
+
+Full argument, including what is deliberately *not* done:
+[`docs/serving.md`](docs/serving.md).
+
+---
+
 ## Quality gates
 
 | Gate | Status |
 |---|---|
-| `pytest` | 249 tests (233 hermetic unit, 16 live-upstream) |
+| `pytest` | 323 tests (303 hermetic unit, 20 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
 | Coverage | 92% from unit tests alone, CI floor 85% |
-| Container | multi-stage, non-root; CI builds it and asserts it runs unprivileged |
+| Container | multi-stage, non-root; published to GHCR from `main` |
+| Kubernetes | CI deploys the real manifests to a kind cluster and asserts the Service returns a projection |
 
 > The container cannot be built in the environment this was developed in
 > (Docker Hub is blocked), so CI is its only verification. The first CI run
@@ -257,11 +309,13 @@ scorecard already exists to measure it.
 2. **Injury and depth-chart features**, once the archive has enough of its own
    history to score against. Backtestable only over the window the archive
    covers, which any claim about them will have to say.
-3. **XGBoost projector.** Usage-based features (targets, carries, snap share)
+3. ~~**Model serving.**~~ **Done.** FastAPI + container + Kubernetes, outside
+   Snowflake. See above.
+4. **XGBoost projector.** Usage-based features (targets, carries, snap share)
    with a Tweedie objective for the zero-inflated target. Measured against the
-   same baseline, on the same universe, by the same harness.
-4. **PFR↔GSIS player crosswalk**, unlocking snap counts.
-5. **Model serving.** FastAPI + container, deployed outside Snowflake.
+   same baseline, on the same universe, by the same harness. The `Predictor`
+   protocol means it drops into the harness *and* the serving layer unchanged.
+5. **PFR↔GSIS player crosswalk**, unlocking snap counts.
 6. **Public consensus baseline.** Compare against published projections, not
    only naive ones.
 7. **Week 1**, once a preseason roster source exists.

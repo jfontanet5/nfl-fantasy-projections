@@ -1,0 +1,109 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nflproj-api
+  labels:
+    app.kubernetes.io/name: nflproj
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nflproj
+      app.kubernetes.io/component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # The bundle is baked into the image, so a rollout is a model change.
+      # Surge one, never go below full capacity: the old model keeps serving
+      # until the new one has passed its readiness probe, which is the whole
+      # reason readiness checks bundle integrity rather than process liveness.
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nflproj
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: ghcr.io/jfontanet5/nfl-fantasy-projections:latest
+          imagePullPolicy: IfNotPresent
+          args: ["serve", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: NFLPROJ_LOG_JSON
+              value: "1"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # Liveness and readiness are deliberately different endpoints.
+          # /healthz is true whenever the process can answer, so a restart is
+          # only ever triggered by a genuinely wedged process. /readyz is false
+          # until a bundle has loaded AND verified its content hash, so a pod
+          # holding a corrupt or missing bundle is cut out of the Service
+          # instead of answering with numbers of unknown origin.
+          #
+          # Pointing both at one endpoint - the usual shortcut - fails in two
+          # opposite directions: restarting pods that are merely still loading,
+          # and routing traffic to pods that should never receive it.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30 # up to 60s to read and verify the bundle
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            # The whole board is a few hundred rows held in memory. Requests are
+            # sized from that rather than copied from a template; limits exist so
+            # a runaway request cannot starve a neighbour.
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only, so the one path that genuinely
+            # needs to be writable is an explicit, size-capped emptyDir rather
+            # than a blanket exception.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
