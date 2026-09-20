@@ -354,3 +354,38 @@ def test_json_island_cannot_be_broken_out_of():
     out = rh._json_island({"x": "</script><script>alert(1)</script>"})
     assert "</script>" not in out
     assert json.loads(out)["x"] == "</script><script>alert(1)</script>"
+
+
+# ---------------------------------------------------------------- SRI
+
+
+def test_a_well_formed_sri_is_emitted(monkeypatch):
+    monkeypatch.setattr(rh, "CHART_LIB_SRI", "sha512-" + "A" * 86 + "==")
+    assert 'integrity="sha512-' in rh._chart_lib_tag()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "A" * 86 + "==",  # the bare openssl output - the easy mistake
+        "sha512 " + "A" * 86,  # space instead of a hyphen
+        "md5-abc",  # algorithm SRI does not allow
+        "sha512-not valid base64!",
+        "",
+    ],
+)
+def test_a_malformed_sri_fails_the_build(monkeypatch, bad):
+    """A malformed integrity value blocks the script as silently as a wrong one.
+
+    Anything set but not well-formed raises, empty string included: the way to
+    mean "no hash" is None, and a blank is far more likely to be a mistake.
+    """
+    monkeypatch.setattr(rh, "CHART_LIB_SRI", bad)
+    with pytest.raises(ValueError, match="not a valid Subresource Integrity"):
+        rh._chart_lib_tag()
+
+
+def test_the_error_names_the_likely_mistake(monkeypatch):
+    monkeypatch.setattr(rh, "CHART_LIB_SRI", "A" * 86 + "==")
+    with pytest.raises(ValueError, match="missing the 'sha512-' prefix"):
+        rh._chart_lib_tag()

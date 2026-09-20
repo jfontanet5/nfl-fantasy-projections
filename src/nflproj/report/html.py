@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
@@ -759,18 +760,42 @@ PAGE_TITLE: Final = "The Sunday Board"
 #:
 #: No Subresource Integrity hash yet. The environment this was built in cannot
 #: reach cdnjs, so the hash could not be computed, and an unverified one is
-#: worse than none - a wrong hash blocks the script silently. To add it:
+#: worse than none - a wrong hash blocks the script silently. To add it, run
+#: this on a machine that can reach cdnjs and paste the whole line, prefix
+#: included, as CHART_LIB_SRI:
 #:
-#:     curl -sL https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js \
-#:       | openssl dgst -sha512 -binary | openssl base64 -A
+#:     V=4.4.4
+#:     curl -sL "https://cdnjs.cloudflare.com/ajax/libs/Chart.js/$V/chart.umd.min.js" \
+#:       | openssl dgst -sha512 -binary | openssl base64 -A \
+#:       | sed 's/^/sha512-/'
 #:
-#: then set CHART_LIB_SRI below and it is emitted automatically.
+#: The `sha512-` prefix is part of the attribute value, not decoration: without
+#: it the browser rejects the value as malformed and blocks the script, which is
+#: the same silent failure an outright wrong hash causes. `_chart_lib_tag`
+#: rejects a value that does not look like an SRI hash rather than emit it.
 CHART_LIB_VERSION: Final = "4.4.4"
 CHART_LIB_SRI: Final[str | None] = None
 
+#: `<algorithm>-<base64 digest>`, per the Subresource Integrity spec.
+_SRI_PATTERN: Final = re.compile(r"^sha(256|384|512)-[A-Za-z0-9+/]+={0,2}$")
+
 
 def _chart_lib_tag() -> str:
+    """Build the script tag, refusing to emit a malformed integrity value.
+
+    Raises:
+        ValueError: If ``CHART_LIB_SRI`` is set but is not a well-formed SRI
+            hash. Failing the build is the point: a malformed attribute would
+            silently stop the chart from loading on the published page.
+    """
     src = f"https://cdnjs.cloudflare.com/ajax/libs/Chart.js/{CHART_LIB_VERSION}/chart.umd.min.js"
+    if CHART_LIB_SRI is not None and not _SRI_PATTERN.match(CHART_LIB_SRI):
+        msg = (
+            f"CHART_LIB_SRI={CHART_LIB_SRI!r} is not a valid Subresource Integrity "
+            "hash. It must look like 'sha512-<base64>' - the bare output of "
+            "`openssl base64` is missing the 'sha512-' prefix."
+        )
+        raise ValueError(msg)
     integrity = f' integrity="{CHART_LIB_SRI}"' if CHART_LIB_SRI else ""
     return (
         f'<script src="{src}"{integrity} crossorigin="anonymous" '
