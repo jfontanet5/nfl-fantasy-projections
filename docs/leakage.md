@@ -91,10 +91,70 @@ them.
 Injury reports and depth charts are **excluded from v1** for the same reason in
 a harsher form: nflverse serves the current state of those tables, not their
 state as of any past Friday, so a historical backtest using them would be
-reading revisions that did not exist at projection time. Building a true
-point-in-time archive requires snapshotting them ourselves, weekly, going
-forward - which is why live publication starts now rather than after the
-model is finished.
+reading revisions that did not exist at projection time. Section 4a is what we
+are doing about it.
+
+## 4a. Some tables can only be known by having written them down
+
+A table that is served "as it stands" is not automatically unusable. The
+question is whether upstream keeps its own history. We looked at both tables we
+want, and they answered differently — which changed what had to be built.
+
+**Depth charts already are a point-in-time log.** Every row carries a `dt`
+observation timestamp, the file is cumulative rather than overwritten, and there
+are 188 distinct scrape times between March and September in the 2026 file
+alone — roughly twice a day. So the as-of view is a filter, not a recording
+problem, and `depth_chart_as_of` is eleven lines that select the latest *whole
+scrape* before a cutoff. No archive is needed and building one would duplicate
+megabytes a week to reconstruct what upstream already tells us. The one subtlety
+is *whole scrape*: taking the latest row per player would splice two scrapes
+together and produce a depth chart that never existed.
+
+**Injury reports are not.** The file is keyed on `(season, week)` with no
+timestamp anywhere in it, and it is rewritten in place as the week progresses.
+Wednesday's *limited participant* becomes Friday's *questionable* becomes
+Sunday's *inactive*, and each overwrite destroys its predecessor. By Tuesday the
+only surviving version is the post-game one — which is the single state a
+projection may never see, because it encodes who actually played.
+
+This is the asymmetric case in the whole project. Everything else here can be
+rebuilt from upstream at any time; the backtest, the panel and the page are all
+pure functions of data that is still out there. Friday's injury report is not
+recoverable at any price. **If the snapshot job does not run on Friday, no
+future version of this code can ever know what Friday said.** That is why
+`nflproj snapshot` and its workflow exist now, before the model, and why live
+publication started this season rather than after the interesting part was
+finished.
+
+The archive (`nflproj.ingest.archive`) has three properties that matter:
+
+- **Content-addressed.** A snapshot is stored under the SHA-256 of its bytes, so
+  an unchanged report costs one manifest line rather than another copy. That is
+  what makes seven captures a week affordable. A no-change capture is not a
+  wasted run either: it is positive evidence that the report did not move
+  between two known times.
+- **Append-only.** The manifest is JSONL, so a new observation is a one-line
+  diff and a rewritten history would be conspicuous in review. The archive is
+  the record of what we claimed to have seen; it should be as hard to edit
+  quietly as the scorecard is.
+- **Strictly-before reads.** `as_of(cutoff)` returns the latest snapshot taken
+  *before* the cutoff, never at or after it, and that is not a parameter. A
+  snapshot taken at kickoff may already reflect the inactive list. The cutoff
+  for a week is its **first** kickoff, not each game's own — a week's
+  projections are published once, so a Sunday player must not be priced with
+  knowledge of Thursday's result.
+
+Two absences are deliberately distinguishable. `as_of` returns `None` when the
+archive does not reach back to that moment, which is true of every week before
+the archive began; it never returns an empty frame there. An empty frame would
+read as "nobody was hurt", and the difference between *unknown* and *nobody*
+is exactly the difference a feature built on this will get wrong if we blur it.
+For the same reason a manifest reference to a missing blob raises rather than
+returning `None`, because a silent `None` would be indistinguishable from
+"before the archive began".
+
+The archive is therefore **committed to git**, unlike everything under `data/`,
+which is gitignored precisely because it is reproducible.
 
 ## 5. The target is computed, not inherited
 
@@ -134,8 +194,11 @@ These are real and currently unaddressed. They are listed here rather than
 discovered later by a reader.
 
 - **Week 1 is not projected** (section 3).
-- **No injury or depth-chart features** (section 4). This is the largest
-  accuracy gap in the current system and is deliberate.
+- **No injury or depth-chart features yet** (sections 4, 4a). Still the largest
+  accuracy gap. The archive is now recording, but it only reaches back to the
+  day it started, so injury features cannot be backtested over 2015-2025 and
+  will not be until the archive has a season of its own behind it. Any future
+  claim about them will have to be scored on that window alone, and said so.
 - **Rookies enter the universe only after their first appearance.** Until then
   they are unprojectable, which understates coverage in September.
 - **Snap counts are not used.** nflverse keys them on Pro-Football-Reference

@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("data"))
     reports_dir: Path = Field(default=Path("reports"))
 
+    #: Point-in-time snapshots of upstream tables that are rewritten in place.
+    #: Deliberately *outside* ``data_dir``: everything under ``data`` is a cache
+    #: reproducible from the manifest and is gitignored, whereas the archive is
+    #: the opposite - unreproducible by construction, and committed, because a
+    #: snapshot nobody kept is a snapshot that never existed. See
+    #: :mod:`nflproj.ingest.archive`.
+    archive_dir: Path = Field(default=Path("archive"))
+
     #: Seasons pulled by default. The upper bound is intentionally open; the
     #: ingest layer clamps to seasons that actually exist upstream.
     first_season: int = Field(default=FIRST_SUPPORTED_SEASON)

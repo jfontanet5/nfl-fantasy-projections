@@ -6,6 +6,8 @@ import pytest
 from typer.testing import CliRunner
 
 from nflproj import cli
+from nflproj.ingest import archive as archive_module
+from nflproj.ingest.archive import Observation
 from nflproj.predictors.baselines import HEADLINE_BASELINE_NAME, default_baselines
 
 runner = CliRunner()
@@ -26,11 +28,13 @@ def test_season_range_parsing(spec, expected):
 def test_help_lists_every_command():
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
-    for command in ("ingest", "backtest", "project", "status"):
+    for command in ("ingest", "backtest", "project", "report", "snapshot", "status"):
         assert command in result.output
 
 
-@pytest.mark.parametrize("command", ["ingest", "backtest", "project", "status"])
+@pytest.mark.parametrize(
+    "command", ["ingest", "backtest", "project", "report", "snapshot", "status"]
+)
 def test_each_command_has_help(command):
     result = runner.invoke(cli.app, [command, "--help"])
     assert result.exit_code == 0
@@ -73,3 +77,44 @@ def test_error_message_lists_the_available_predictors(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "build_panel", lambda *_a, **_k: None)
     result = runner.invoke(cli.app, ["project", "2024", "--week", "5", "--predictor", "nope"])
     assert "ewma_hl3" in result.output
+
+
+def test_snapshot_in_the_offseason_is_a_no_op_not_a_failure(monkeypatch, tmp_path):
+    """A red job every night from February to August would train us to ignore it."""
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "build_team_calendar", lambda *_a, **_k: "calendar")
+    monkeypatch.setattr(cli, "snapshot_season", lambda *_a, **_k: None)
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("nothing should be fetched when no game is imminent")
+
+    monkeypatch.setattr(archive_module.Archive, "capture", _explode)
+
+    result = runner.invoke(cli.app, ["snapshot"])
+    assert result.exit_code == 0
+    assert "nothing to record" in result.output
+
+
+def test_snapshot_reports_whether_the_report_changed(monkeypatch, tmp_path):
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    captured: dict[str, object] = {}
+
+    def _capture(_self: object, season: int, **_kwargs: object) -> Observation:
+        captured["season"] = season
+        return Observation(
+            asset="injuries",
+            season=season,
+            fetched_at="2026-09-17T22:00:00+00:00",
+            sha256="a" * 64,
+            rows=433,
+            source_url="https://example.invalid/injuries_2026.parquet",
+            novel=False,
+        )
+
+    monkeypatch.setattr(archive_module.Archive, "capture", _capture)
+
+    result = runner.invoke(cli.app, ["snapshot", "2026"])
+    assert result.exit_code == 0
+    assert captured["season"] == 2026
+    assert "433 rows" in result.output
+    assert "unchanged" in result.output

@@ -20,5 +20,11 @@ data/cache/
 
 # Scorecards ARE committed - they are the public track record.
 !reports/
+
+# So is the archive, and for a stronger reason: everything under data/ can be
+# re-downloaded, and nothing under archive/ can. Upstream overwrites the injury
+# report in place, so a snapshot that is not committed the day it is taken is
+# gone. Do not add archive/ here.
+!archive/
 .DS_Store
 .env

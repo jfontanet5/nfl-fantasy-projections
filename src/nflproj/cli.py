@@ -21,6 +21,7 @@ from nflproj.features.calendar import (
 )
 from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, UniversePolicy, build_panel
 from nflproj.ingest import nflverse as nv
+from nflproj.ingest.archive import INJURIES, Archive, snapshot_season
 from nflproj.ingest.manifest import Manifest
 from nflproj.logging import configure_logging, get_logger
 from nflproj.predictors.baselines import (
@@ -201,6 +202,39 @@ def report(
         projected_players=0 if projections is None else len(projections),
     )
     typer.echo(f"wrote {destination}")
+
+
+@app.command()
+def snapshot(
+    season: Annotated[
+        int | None, typer.Argument(help="Season to file under. Defaults to the one in progress.")
+    ] = None,
+) -> None:
+    """Record the injury report as it stands right now.
+
+    The injury file upstream is keyed on (season, week) and rewritten in place
+    as the week progresses, so Friday's report is destroyed by Sunday's. The
+    only way to ever have it is to have written it down on Friday. Run often;
+    identical bytes cost one manifest line, not another copy.
+    """
+    settings = get_settings()
+    settings.ensure_dirs()
+
+    if season is None:
+        calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
+        season = snapshot_season(calendar)
+        if season is None:
+            # Not an error. Injury reports only move around games; in the
+            # offseason there is genuinely nothing to record.
+            typer.echo("no kickoff within the snapshot window; nothing to record")
+            return
+
+    observation = Archive(settings.archive_dir, INJURIES).capture(season, settings=settings)
+    state = "new" if observation.novel else "unchanged since the last capture"
+    typer.echo(
+        f"{observation.asset} {observation.season}: {observation.rows} rows, "
+        f"sha256 {observation.sha256[:12]} ({state})"
+    )
 
 
 @app.command()

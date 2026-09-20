@@ -1,0 +1,85 @@
+name: Injury snapshot
+
+# Records the injury report as it stands, several times a week, and commits it.
+#
+# This is the only job in the repo whose output cannot be regenerated. Every
+# other artefact - the panel, the backtest, the page - can be rebuilt from
+# upstream at any time. The injury file cannot: nflverse keys it on
+# (season, week) and rewrites it in place as the week progresses, so Friday's
+# "questionable" is gone by Sunday and gone for good. If this job does not run
+# on Friday, no future version of this code can ever know what Friday said.
+#
+# Which is why the cadence looks excessive and is not. The captures that matter
+# are the pre-kickoff ones; a Tuesday-only job would faithfully record the
+# post-game state, which is the one state a projection may never see.
+# Identical bytes cost one manifest line, so a run that changes nothing is
+# cheap and is still evidence: it says the report did not move.
+
+on:
+  schedule:
+    # All times UTC. GitHub runs scheduled jobs late under load, which is safe
+    # here by construction: `as_of` is strict, so a capture that lands after
+    # kickoff is simply never used for that week rather than leaking into it.
+    - cron: "0 23 * * 3" # Wed - first practice report of the week
+    - cron: "0 22 * * 4" # Thu - before Thursday night football (00:15 UTC)
+    - cron: "0 22 * * 5" # Fri - final game-status designations
+    - cron: "0 17 * * 6" # Sat - late-season Saturday slates
+    - cron: "0 15 * * 0" # Sun - two hours out from the 1pm ET window
+    - cron: "0 16 * * 0" # Sun - last call before 17:00 UTC kickoffs
+    - cron: "0 22 * * 1" # Mon - before Monday night football
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to file under. Blank = derived from the schedule."
+        required: false
+
+permissions:
+  contents: write
+
+# Serialised against itself, and never cancelled: a capture that is dropped
+# mid-season is a hole in the record that cannot be backfilled.
+concurrency:
+  group: injury-snapshot
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      # Exits cleanly outside the season: with no kickoff within the snapshot
+      # window there is genuinely nothing to record, and a job that went red
+      # every night from February to August would train us to ignore it.
+      - name: capture the current injury report
+        run: uv run nflproj snapshot ${{ inputs.season }}
+
+      - name: commit the snapshot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add archive/
+          if git diff --staged --quiet; then
+            echo "no new observation; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(archive): injury snapshot $(date -u +'%Y-%m-%dT%H:%MZ')"
+          # The weekly scorecard job also pushes to main. Rebase rather than
+          # force: both jobs only ever append, so a rebase is always clean, and
+          # a force-push here would silently delete a scorecard.
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push; then
+              exit 0
+            fi
+            echo "push attempt $attempt lost a race; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "could not push the snapshot after 3 attempts"
+          exit 1

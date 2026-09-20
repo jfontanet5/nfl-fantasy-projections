@@ -134,6 +134,37 @@ embeds SHA-256 hashes of the files its numbers came from.
 
 ---
 
+## The one thing here that cannot be rebuilt
+
+Every artefact in this repo is a pure function of data still sitting upstream —
+except one. nflverse keys the injury report on `(season, week)` and **rewrites
+it in place** as the week progresses. Wednesday's *limited participant* becomes
+Friday's *questionable* becomes Sunday's *inactive*, and each overwrite destroys
+the last. By Tuesday the only surviving version is the post-game one, which is
+the single state a projection may never see, because it encodes who played.
+
+So `nflproj snapshot` runs seven times a week on a pre-kickoff cadence and
+commits what it saw. The snapshots are content-addressed, so an unchanged report
+costs one line in a JSONL manifest rather than another copy of the file — and a
+no-change capture is still evidence, because it pins down that the report did
+not move between two known times. Reads are strictly *before* a cutoff, never at
+or after it, and the cutoff for a week is its first kickoff rather than each
+game's own.
+
+Depth charts turned out to need none of this. They already carry a `dt`
+observation timestamp and are cumulative — 188 distinct scrapes between March
+and September — so the as-of view is a filter over what upstream already keeps.
+Checking that before building the snapshotter halved the work. The full argument
+is in [`docs/leakage.md`](docs/leakage.md#4a-some-tables-can-only-be-known-by-having-written-them-down).
+
+The archive is committed, unlike everything under `data/`, for exactly the
+reason `data/` is not: `data/` can be re-downloaded and this cannot. It reaches
+back only to the day it started, which is a real limitation and is stated rather
+than papered over — injury features will be backtestable over that window and no
+further.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -144,6 +175,7 @@ uv run nflproj ingest --seasons 2015-2026          # mirror upstream, with prove
 uv run nflproj backtest --seasons 2015-2025        # walk-forward + scorecard
 uv run nflproj project 2026 --week 3               # project an upcoming week
 uv run nflproj report                              # render the public page
+uv run nflproj snapshot                            # record today's injury report
 ```
 
 `report` takes no arguments by default: the season and week come from the
@@ -163,6 +195,7 @@ docker run --rm -v "$PWD/data:/data" -v "$PWD/reports:/reports" nflproj \
 
 ```
 ingest/      nflverse release mirror + SHA-256 provenance manifest
+             archive/ point-in-time snapshots of tables upstream overwrites
 features/    team calendar (schedule-derived) -> player-week panel + universe
 predictors/  Predictor protocol; baselines implementing it
 evaluation/  walk-forward harness -> metrics -> versioned scorecard
@@ -191,10 +224,10 @@ see.
 
 | Gate | Status |
 |---|---|
-| `pytest` | 233 tests (217 hermetic unit, 16 live-upstream) |
+| `pytest` | 249 tests (233 hermetic unit, 16 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
-| Coverage | 91% from unit tests alone, CI floor 85% |
+| Coverage | 92% from unit tests alone, CI floor 85% |
 | Container | multi-stage, non-root; CI builds it and asserts it runs unprivileged |
 
 > The container cannot be built in the environment this was developed in
@@ -219,18 +252,19 @@ make check    # lint + format + types + tests
 In order, and the order is the point — each step is only meaningful because the
 scorecard already exists to measure it.
 
-1. **Point-in-time injury and depth-chart archive.** The largest accuracy gap.
-   nflverse serves current state, not historical as-of state, so this requires
-   snapshotting weekly going forward. Started now rather than after the model,
-   which is why live publication begins this season.
-2. **XGBoost projector.** Usage-based features (targets, carries, snap share)
+1. ~~**Point-in-time injury archive.**~~ **Recording since 2026 week 3.** See
+   below; the features built on it are step 2.
+2. **Injury and depth-chart features**, once the archive has enough of its own
+   history to score against. Backtestable only over the window the archive
+   covers, which any claim about them will have to say.
+3. **XGBoost projector.** Usage-based features (targets, carries, snap share)
    with a Tweedie objective for the zero-inflated target. Measured against the
    same baseline, on the same universe, by the same harness.
-3. **PFR↔GSIS player crosswalk**, unlocking snap counts.
-4. **Model serving.** FastAPI + container, deployed outside Snowflake.
-5. **Public consensus baseline.** Compare against published projections, not
+4. **PFR↔GSIS player crosswalk**, unlocking snap counts.
+5. **Model serving.** FastAPI + container, deployed outside Snowflake.
+6. **Public consensus baseline.** Compare against published projections, not
    only naive ones.
-6. **Week 1**, once a preseason roster source exists.
+7. **Week 1**, once a preseason roster source exists.
 
 ## Licence
 
