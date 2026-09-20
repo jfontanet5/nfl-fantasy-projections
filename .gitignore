@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Data zones are reproducible from the manifest; never commit them.
+data/raw/
+data/processed/
+data/cache/
+*.duckdb
+*.duckdb.wal
+
+# Scorecards ARE committed - they are the public track record.
+!reports/
+.DS_Store
+.env

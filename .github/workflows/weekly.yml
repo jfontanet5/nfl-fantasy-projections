@@ -1,0 +1,76 @@
+name: Weekly scorecard
+
+# The public track record. Runs after every NFL week has finished, scores the
+# projections that were published before that week, and commits the result.
+#
+# Committing rather than just publishing is the point: the scorecard's history
+# is in git, so a number cannot be quietly revised after the fact.
+
+on:
+  schedule:
+    # Tuesday 12:00 UTC - after Monday night football has finished and after
+    # nflverse has rebuilt its weekly stats.
+    - cron: "0 12 * * 2"
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Season range to backtest, e.g. 2015-2026"
+        required: false
+        default: "2015-2026"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-scorecard
+  cancel-in-progress: false
+
+jobs:
+  scorecard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      - name: how far has the season got
+        run: uv run nflproj status
+
+      - name: refresh upstream data
+        run: uv run nflproj ingest --seasons "${{ inputs.seasons || '2015-2026' }}" --force
+
+      - name: score the decision-grade universe
+        run: |
+          uv run nflproj backtest \
+            --seasons "${{ inputs.seasons || '2015-2026' }}" \
+            --universe active_recent \
+            --stem scorecard
+
+      - name: score the played-only universe for comparability
+        run: |
+          uv run nflproj backtest \
+            --seasons "${{ inputs.seasons || '2015-2026' }}" \
+            --universe played \
+            --stem scorecard_played_only
+
+      - name: commit the track record
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --staged --quiet; then
+            echo "scorecard unchanged; nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(scorecard): weekly refresh $(date -u +%Y-%m-%d)"
+          git push
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scorecard
+          path: reports/

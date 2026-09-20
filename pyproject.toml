@@ -1,0 +1,138 @@
+[project]
+name = "nflproj"
+version = "0.1.0"
+description = "Weekly NFL fantasy point projections evaluated against named baselines."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "JJ", email = "jaf2012@gmail.com" }]
+
+dependencies = [
+    "duckdb>=1.1",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pandas-stubs>=2.2",
+    "pyarrow>=17.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "requests>=2.32",
+    "structlog>=24.4",
+    "tabulate>=0.9",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "types-requests>=2.32",
+]
+
+[project.scripts]
+nflproj = "nflproj.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nflproj"]
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtin shadowing
+    "ANN",  # missing annotations
+    "ARG",  # unused arguments
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "DTZ",  # naive datetimes
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # import sorting
+    "N",    # naming
+    "PD",   # pandas-vet
+    "PL",   # pylint
+    "PT",   # pytest style
+    "PTH",  # use pathlib
+    "RET",  # return style
+    "RUF",  # ruff-specific
+    "SIM",  # simplify
+    "T20",  # no print
+    "TID",  # tidy imports
+    "UP",   # pyupgrade
+    "W",    # warnings
+]
+ignore = [
+    "ANN401",  # Any is occasionally the honest annotation at pandas boundaries
+    "PD901",   # `df` is a fine name
+    "PLR0913", # explicit keyword-heavy constructors are intentional here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN201", "ANN001", "PLR2004", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nflproj"]
+
+# ---------------------------------------------------------------- mypy
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_any_generics = true
+show_error_codes = true
+plugins = []
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["duckdb.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `src` is checked under full strict mode with no exemptions. Tests get exactly
+# one relaxation: test functions need not annotate `-> None`. Requiring it on
+# ~90 assertion bodies is noise that catches nothing. Every other strict check
+# still applies to tests, including argument types - which is what surfaced
+# `default_baselines() -> list[object]` failing to satisfy `Sequence[Predictor]`.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "network: test requires outbound network access to nflverse (deselect with '-m \"not network\"')",
+    "slow: test takes more than a few seconds",
+]
+
+[tool.coverage.run]
+source = ["src/nflproj"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
