@@ -9,6 +9,7 @@ document that claims a metric the scorecard does not contain.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pandas as pd
@@ -58,6 +59,10 @@ def scorecard() -> dict[str, Any]:
             "by_season_phase": [
                 _scorecard_row("ewma_hl3", season_phase="weeks_2_4", spearman=0.540),
                 _scorecard_row("ewma_hl3", season_phase="weeks_5_plus", spearman=0.608),
+            ],
+            "by_week": [
+                _scorecard_row("ewma_hl3", season=2024, week=w, mae_skill=skill, mae=4.4 + w / 100)
+                for w, skill in ((2, 0.08), (3, -0.05), (4, 0.12), (5, 0.03))
             ],
         },
     }
@@ -131,9 +136,43 @@ def test_page_declares_both_themes(data):
     assert ':root:not([data-theme="light"])' in doc
 
 
-def test_page_carries_no_javascript(data):
-    """Everything must be readable at rest, including as a link preview."""
-    assert "<script" not in rh.render_document(data).lower()
+def test_every_fact_survives_without_javascript(data):
+    """JS may add the chart and the controls; it must never be the only source
+    of a number the page states."""
+    content = rh.render_content(data)
+    stripped = re.sub(r"<script.*?</script>", "", content, flags=re.S | re.I)
+    # The board, the readings and the weekly series all remain.
+    assert "QB Player 0" in stripped
+    assert "Start/sit accuracy" in stripped
+    assert "Week-by-week numbers" in stripped
+    assert "borderline calls" in stripped
+
+
+def test_controls_are_hidden_until_script_runs(data):
+    """A control that does nothing without JS must not be shown."""
+    content = rh.render_content(data)
+    assert 'id="board-controls" hidden' in content
+
+
+def test_chart_library_is_pinned(data):
+    doc = rh.render_document(data)
+    assert f"Chart.js/{rh.CHART_LIB_VERSION}/" in doc
+    assert "@latest" not in doc
+
+
+def test_no_unverified_integrity_hash_is_emitted(data):
+    """A wrong SRI hash blocks the script silently; absent is safer than guessed."""
+    doc = rh.render_document(data)
+    if rh.CHART_LIB_SRI is None:
+        assert "integrity=" not in doc
+    else:
+        assert f'integrity="{rh.CHART_LIB_SRI}"' in doc
+
+
+def test_script_has_no_unsubstituted_tokens(data):
+    doc = rh.render_document(data)
+    assert "__POSITIVE" not in doc
+    assert "__NEGATIVE" not in doc
 
 
 # ---------------------------------------------------------------- board
@@ -216,8 +255,11 @@ def test_player_names_are_escaped(scorecard, tmp_path):
         scorecard_path=path, projections=hostile, season=2026, week=3, predictor="ewma_hl3"
     )
     content = rh.render_content(data)
-    assert "<script>" not in content
+    # The name survives only in escaped form...
     assert "&lt;script&gt;" in content
+    # ...and adds no live <script> of its own. The page emits exactly two: the
+    # JSON island and the behaviour script.
+    assert content.count("<script") == 2
 
 
 def test_unknown_predictor_fails_loudly(scorecard, projections, tmp_path):
@@ -261,3 +303,54 @@ def test_provenance_hashes_are_published(data):
 def test_skill_against_the_baseline_is_stated(data):
     """4.417 against a 4.591 baseline is a 3.8% improvement."""
     assert "3.8% better than" in rh.render_content(data)
+
+
+# ---------------------------------------------------------------- trend
+
+
+def test_trend_reports_the_win_rate(data):
+    """Three of the four fixture weeks beat the baseline."""
+    content = rh.render_content(data)
+    assert '3<span class="stat-of">/4</span>' in content
+    assert "75%" in content
+
+
+def test_trend_names_the_worst_week(data):
+    content = rh.render_content(data)
+    assert "-5.0%" in content
+    assert "2024 W3" in content
+
+
+def test_trend_series_is_chronological(data):
+    series = rh._weekly_series(data.scorecard, "ewma_hl3")
+    weeks = [int(r["week"]) for r in series]
+    assert weeks == sorted(weeks)
+
+
+def test_trend_losses_are_stated_not_hidden(data):
+    """The point of publishing a track record is the weeks it lost."""
+    assert "1 of them" in rh.render_content(data) or "there are 1" in rh.render_content(data)
+
+
+def test_page_without_a_by_week_slice_still_renders(scorecard, projections, tmp_path):
+    """An older scorecard must not break the page."""
+    del scorecard["slices"]["by_week"]
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps(scorecard))
+    data = rh.build_report_data(
+        scorecard_path=path,
+        projections=projections,
+        season=2026,
+        week=3,
+        predictor="ewma_hl3",
+    )
+    content = rh.render_content(data)
+    assert "Week by week" not in content
+    assert "QB Player 0" in content
+
+
+def test_json_island_cannot_be_broken_out_of():
+    """`</script>` inside a JSON island closes it, whatever the JSON grammar says."""
+    out = rh._json_island({"x": "</script><script>alert(1)</script>"})
+    assert "</script>" not in out
+    assert json.loads(out)["x"] == "</script><script>alert(1)</script>"

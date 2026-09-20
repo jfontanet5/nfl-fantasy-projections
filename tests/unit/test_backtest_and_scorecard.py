@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from nflproj.evaluation.backtest import BacktestConfig, project_week, run_backtest
-from nflproj.evaluation.scorecard import build_scorecard
+from nflproj.evaluation.scorecard import SCORECARD_SCHEMA_VERSION, build_scorecard
 from nflproj.features.panel import UniversePolicy
 from nflproj.predictors.baselines import (
     HEADLINE_BASELINE_NAME,
@@ -114,7 +114,7 @@ def test_scorecard_requires_its_baseline_to_be_present(synthetic_panel):
 def test_scorecard_slices_are_all_populated(synthetic_panel):
     preds = run_backtest(synthetic_panel, default_baselines())
     card = build_scorecard(preds)
-    assert set(card.slices) == {"overall", "by_position", "by_season_phase"}
+    assert set(card.slices) == {"overall", "by_position", "by_season_phase", "by_week"}
     for name, frame in card.slices.items():
         assert not frame.empty, f"{name} slice is empty"
     assert set(card.slices["by_position"]["position"]) == {"QB", "RB", "WR", "TE"}
@@ -136,6 +136,49 @@ def test_scorecard_roundtrips_to_json(synthetic_panel, tmp_path):
     payload = json.loads(path.read_text())
     assert payload["baseline"] == HEADLINE_BASELINE_NAME
     assert payload["provenance"]["sha"] == "abc123"
-    assert payload["schema_version"] == "1"
+    assert payload["schema_version"] == SCORECARD_SCHEMA_VERSION
     assert len(payload["slices"]["overall"]) == len(default_baselines())
     assert (tmp_path / "scorecard.md").exists()
+
+
+def test_weekly_slice_covers_every_scored_week(synthetic_panel):
+    """The record is only a record if no week is missing from it."""
+    preds = run_backtest(synthetic_panel, default_baselines())
+    card = build_scorecard(preds)
+    by_week = card.slices["by_week"]
+
+    scored = preds.groupby(["season", "week"], observed=True).ngroups
+    assert by_week.groupby(["season", "week"], observed=True).ngroups == scored
+    # Per-week rows describe one week each, so the column would be constant.
+    assert "n_weeks" not in by_week.columns
+
+
+def test_weekly_slice_is_append_ordered(synthetic_panel):
+    """Chronological order keeps the weekly commit a small diff, not a rewrite."""
+    preds = run_backtest(synthetic_panel, default_baselines())
+    by_week = build_scorecard(preds).slices["by_week"]
+    keys = list(zip(by_week["season"], by_week["week"], strict=True))
+    assert keys == sorted(keys)
+
+
+def test_metrics_are_rounded_before_serialising(synthetic_panel):
+    """Full float repr roughly doubles a file that is committed every week."""
+    preds = run_backtest(synthetic_panel, default_baselines())
+    payload = json.loads(build_scorecard(preds).to_json())
+    for row in payload["slices"]["by_week"]:
+        assert len(str(row["mae"]).split(".")[-1]) <= 6
+
+
+def test_markdown_summarises_the_weekly_slice_instead_of_tabulating_it(synthetic_panel):
+    """The markdown scorecard is for reading; the full series lives in the JSON."""
+    preds = run_backtest(synthetic_panel, default_baselines())
+    card = build_scorecard(preds)
+    md = card.to_markdown()
+
+    assert "## by_week" in md
+    assert "see `scorecard.json`" in md
+    # The other slices are still real tables.
+    assert "## overall" in md
+    assert "|" in md.split("## overall")[1][:400]
+    # And the summary is far shorter than the table would have been.
+    assert len(md) < len(card.to_json())

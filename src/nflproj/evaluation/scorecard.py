@@ -5,7 +5,7 @@ baseline, over a declared universe, on a declared data snapshot. It is written
 to ``reports/`` and committed, so the track record accumulates in public and
 cannot be quietly revised.
 
-Three slices are always reported, because each one can flatter or damn a
+Four slices are always reported, because each one can flatter or damn a
 predictor on its own:
 
 overall
@@ -17,6 +17,11 @@ by_season_phase
     Weeks 2-4 against weeks 5+. Early-season projections have almost no
     within-season history and are where naive baselines are weakest; averaging
     them into a season number hides the hardest part of the problem.
+by_week
+    Every scored week, in order. The aggregate says how good the system is; only
+    this series shows the weeks it lost, which is the claim the project makes.
+    Rows are append-ordered, so a weekly rebuild adds to the file rather than
+    rewriting it.
 """
 
 from __future__ import annotations
@@ -42,7 +47,16 @@ log = get_logger(__name__)
 #: built on three games or fewer.
 EARLY_SEASON_THROUGH_WEEK: Final = 4
 
-SCORECARD_SCHEMA_VERSION: Final = "1"
+SCORECARD_SCHEMA_VERSION: Final = "2"
+
+#: Decimal places metrics are rounded to before serialising. Past this the
+#: digits are float noise, and the weekly slice is committed every Tuesday -
+#: full float repr roughly doubles the file for precision nobody can use.
+ROUND_DP: Final = 6
+
+#: Slices summarised rather than tabulated in the markdown scorecard, because
+#: they are too long to read. They are complete in the JSON either way.
+MARKDOWN_SUMMARY_ONLY: Final[frozenset[str]] = frozenset({"by_week"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +82,8 @@ class Scorecard:
             "n_predictions": self.n_predictions,
             "provenance": self.provenance,
             "slices": {
-                name: frame.to_dict(orient="records") for name, frame in self.slices.items()
+                name: frame.round(ROUND_DP).to_dict(orient="records")
+                for name, frame in self.slices.items()
             },
         }
         return json.dumps(payload, indent=2, default=str) + "\n"
@@ -98,6 +113,18 @@ class Scorecard:
             "",
         ]
         for name, frame in self.slices.items():
+            if name in MARKDOWN_SUMMARY_ONLY:
+                # A 1,200-row table is not something anyone reads in a markdown
+                # file. The full series stays in the JSON, and the page plots it.
+                lines += [
+                    f"## {name}",
+                    "",
+                    f"{len(frame):,} rows across "
+                    f"{frame.groupby(['season', 'week']).ngroups:,} weeks - "
+                    "see `scorecard.json` for the full series.",
+                    "",
+                ]
+                continue
             lines += [f"## {name}", "", frame.to_markdown(index=False, floatfmt=".4f"), ""]
         return "\n".join(lines)
 
@@ -182,6 +209,14 @@ def build_scorecard(
         "overall": _metrics_frame(scored, baseline=baseline),
         "by_position": _metrics_frame(scored, baseline=baseline, group_cols=["position"]),
         "by_season_phase": _metrics_frame(scored, baseline=baseline, group_cols=["season_phase"]),
+        # The time dimension. An aggregate over eleven seasons says how good the
+        # system is; only the week-by-week series shows the weeks it lost, which
+        # is the claim this project actually makes. Every predictor is included
+        # rather than just the published one, because the record should be the
+        # whole record.
+        "by_week": _metrics_frame(scored, baseline=baseline, group_cols=["season", "week"]).drop(
+            columns=["n_weeks"]
+        ),
     }
 
     return Scorecard(

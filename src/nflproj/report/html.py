@@ -6,8 +6,11 @@ universe definition and the provenance hashes. So the board and the plain-langua
 readings lead, and the methodology sits underneath in a disclosure - present, not
 in the way.
 
-No JavaScript. Everything is visible once the page loads, which also means the
-page still reads correctly as a shared link preview or with scripting off.
+Progressive enhancement, strictly. Every number the page states - the board, the
+readings, the whole week-by-week series - is in the HTML. JavaScript only adds
+the chart, the player filter and column sorting, and the controls that depend on
+it stay hidden until it runs. With scripting off the page loses a picture and
+keeps every fact, which is also why it still reads correctly as a link preview.
 """
 
 from __future__ import annotations
@@ -140,7 +143,13 @@ def _board(projections: pd.DataFrame | None, calibration: float) -> str:
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>#</th><th>Player</th><th>Team</th><th>Opp</th><th>Proj</th></tr>
+              <tr>
+                <th>#</th>
+                <th data-sort="text">Player</th>
+                <th data-sort="text">Team</th>
+                <th data-sort="text">Opp</th>
+                <th data-sort="number" aria-sort="descending">Proj</th>
+              </tr>
             </thead>
             <tbody>
 {rows}
@@ -157,7 +166,124 @@ def _board(projections: pd.DataFrame | None, calibration: float) -> str:
             "the bottom is smaller than it looks.</p>"
         )
 
-    return spread_note + "\n".join(blocks)
+    # Hidden until the script enables them, so a reader without JavaScript is
+    # never shown a control that does nothing.
+    controls = """
+      <div class="board-controls" id="board-controls" hidden>
+        <input type="search" id="player-search" placeholder="Find a player"
+               aria-label="Filter the board by player name">
+        <span class="board-hint">Click a column heading to re-sort.</span>
+      </div>"""
+
+    return controls + spread_note + "\n".join(blocks)
+
+
+@dataclass(frozen=True, slots=True)
+class _TrendPoint:
+    """One scored week, ready to plot."""
+
+    label: str
+    skill_pct: float
+
+
+def _weekly_series(scorecard: dict[str, Any], predictor: str) -> list[dict[str, Any]]:
+    """The published predictor's week-by-week record, in chronological order."""
+    rows = _rows_for(scorecard, "by_week", predictor)
+    rows.sort(key=lambda r: (int(r["season"]), int(r["week"])))
+    return rows
+
+
+def _trend_section(scorecard: dict[str, Any], predictor: str) -> str:
+    """The time dimension: how the system did each week against the baseline.
+
+    Plotted as skill rather than raw error. Two overlapping error lines would be
+    a tangle at 181 points, and the question a reader actually has is not "how
+    many points did it miss by" - that is on the cards above - but "does it
+    beat the thing I would have done myself, and how often does it fail to".
+    Zero is the baseline; below zero is a week this system lost.
+    """
+    if "by_week" not in scorecard.get("slices", {}):
+        return ""
+    rows = _weekly_series(scorecard, predictor)
+    if not rows:
+        return ""
+
+    points = [
+        _TrendPoint(
+            label=f"{int(r['season'])} W{int(r['week'])}",
+            skill_pct=round(float(r["mae_skill"]) * 100, 2),
+        )
+        for r in rows
+        if r.get("mae_skill") is not None
+    ]
+    if not points:
+        return ""
+
+    island = _json_island([{"x": p.label, "y": p.skill_pct} for p in points])
+    wins = sum(1 for p in points if p.skill_pct > 0)
+    total = len(points)
+    pct = round(wins / total * 100)
+    worst = min(points, key=lambda p: p.skill_pct)
+
+    return f"""
+  <h2>Week by week</h2>
+  <p class="section-lede">Each point is one scored week: how much better or worse
+  than the baseline this system did that week. Zero is the baseline. Below zero
+  is a week it lost &mdash; and there are {total - wins} of them, which is the
+  point of publishing this at all.</p>
+
+  <div class="trend-stats">
+    <div class="stat">
+      <span class="stat-value">{wins}<span class="stat-of">/{total}</span></span>
+      <span class="stat-label">weeks beaten ({pct}%)</span>
+    </div>
+    <div class="stat">
+      <span class="stat-value">{worst.skill_pct:.1f}%</span>
+      <span class="stat-label">worst week ({_esc(worst.label)})</span>
+    </div>
+  </div>
+
+  <figure class="chart-figure">
+    <div class="chart-box"><canvas id="trend" aria-label="Weekly skill against the baseline"
+      role="img"></canvas></div>
+    <figcaption>Higher is better. Rendered from
+    <code>reports/scorecard.json</code>; the table below carries the same
+    numbers for anyone without JavaScript.</figcaption>
+  </figure>
+
+  <details class="weekly-table">
+    <summary>Week-by-week numbers</summary>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Season</th><th>Week</th><th>MAE</th><th>vs baseline</th></tr></thead>
+        <tbody>
+{_weekly_rows(rows)}
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <script id="trend-data" type="application/json">{island}</script>"""
+
+
+def _json_island(payload: object) -> str:
+    """Serialise data for an inline ``application/json`` block.
+
+    The browser ends the block at the first literal ``</script>`` in the text,
+    regardless of JSON syntax, so that sequence is escaped. ``\u003c`` is still
+    valid JSON and parses back to the same string.
+    """
+    return json.dumps(payload).replace("<", "\\u003c")
+
+
+def _weekly_rows(rows: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        f"          <tr><td>{int(r['season'])}</td><td>{int(r['week'])}</td>"
+        f"<td class='pts'>{float(r['mae']):.2f}</td>"
+        f"<td class='pts'>{float(r['mae_skill']) * 100:+.1f}%</td></tr>"
+        for r in rows
+        if r.get("mae_skill") is not None
+    )
 
 
 def _methodology(scorecard: dict[str, Any], predictor: str) -> str:
@@ -549,6 +675,72 @@ _STYLE: Final = """
   }
   a { color: var(--accent); }
 
+  /* ---------- trend ---------- */
+  .trend-stats { display: flex; flex-wrap: wrap; gap: 28px; margin-bottom: 20px; }
+  .stat { display: flex; flex-direction: column; gap: 2px; }
+  .stat-value {
+    font-family: Oswald, Arial, sans-serif;
+    font-size: 2rem;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-of { color: var(--ink-3); font-size: 1.1rem; }
+  .stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    color: var(--ink-3);
+  }
+  .chart-figure { margin: 0 0 8px; }
+  .chart-box {
+    position: relative;
+    height: 320px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 12px;
+    box-shadow: var(--shadow);
+  }
+  .chart-figure figcaption {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-top: 8px;
+    max-width: 62ch;
+  }
+  .weekly-table { margin-bottom: 8px; }
+  .weekly-table summary {
+    cursor: pointer;
+    font-family: Oswald, Arial, sans-serif;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .09em;
+    color: var(--ink-2);
+    padding: 8px 0;
+  }
+  .weekly-table summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .weekly-table table { max-width: 34rem; }
+
+  /* ---------- board controls (revealed by script) ---------- */
+  .board-controls { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+  .board-controls input {
+    font: inherit;
+    font-size: .95rem;
+    padding: 8px 12px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--ink);
+    min-width: 0;
+    flex: 1 1 14rem;
+    max-width: 22rem;
+  }
+  .board-controls input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .board-hint { font-size: 12px; color: var(--ink-3); }
+  th[data-sort] { cursor: pointer; user-select: none; }
+  th[data-sort]:hover { color: var(--ink); }
+  th[aria-sort="ascending"]::after { content: " \\2191"; }
+  th[aria-sort="descending"]::after { content: " \\2193"; }
+  tr.filtered { display: none; }
+  .no-match { color: var(--ink-3); font-style: italic; padding: 10px 12px; }
+
   @media (max-width: 30rem) {
     body { font-size: 16px; }
     .reading { padding: 16px; }
@@ -561,6 +753,229 @@ _STYLE: Final = """
 
 PAGE_TITLE: Final = "The Sunday Board"
 
+#: Pinned, loaded from cdnjs, and the page's only runtime dependency. Everything
+#: it draws is also present as a table in the HTML, so a reader who never runs
+#: it loses the picture and nothing else.
+#:
+#: No Subresource Integrity hash yet. The environment this was built in cannot
+#: reach cdnjs, so the hash could not be computed, and an unverified one is
+#: worse than none - a wrong hash blocks the script silently. To add it:
+#:
+#:     curl -sL https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js \
+#:       | openssl dgst -sha512 -binary | openssl base64 -A
+#:
+#: then set CHART_LIB_SRI below and it is emitted automatically.
+CHART_LIB_VERSION: Final = "4.4.4"
+CHART_LIB_SRI: Final[str | None] = None
+
+
+def _chart_lib_tag() -> str:
+    src = f"https://cdnjs.cloudflare.com/ajax/libs/Chart.js/{CHART_LIB_VERSION}/chart.umd.min.js"
+    integrity = f' integrity="{CHART_LIB_SRI}"' if CHART_LIB_SRI else ""
+    return (
+        f'<script src="{src}"{integrity} crossorigin="anonymous" '
+        'referrerpolicy="no-referrer" defer></script>'
+    )
+
+
+#: Series colours, validated for both themes with the dataviz palette checker:
+#: lightness band, chroma floor, CVD separation, normal-vision floor and
+#: contrast against each theme's chart surface all pass.
+_CHART_INK: Final = {
+    "light": {"positive": "#008573", "negative": "#b35309"},
+    "dark": {"positive": "#1ea48f", "negative": "#bf7f28"},
+}
+
+_SCRIPT: Final = """
+(function () {
+  "use strict";
+
+  // ---- board: search and sort -------------------------------------------
+  // Progressive enhancement. The board is complete in the HTML; this only
+  // filters and reorders what is already there.
+  var controls = document.getElementById("board-controls");
+  var search = document.getElementById("player-search");
+  var tables = Array.prototype.slice.call(
+    document.querySelectorAll(".board-block table")
+  );
+
+  if (controls && search && tables.length) {
+    controls.hidden = false;
+
+    search.addEventListener("input", function () {
+      var needle = search.value.trim().toLowerCase();
+      tables.forEach(function (table) {
+        var shown = 0;
+        var rows = table.tBodies[0].rows;
+        for (var i = 0; i < rows.length; i++) {
+          var name = rows[i].cells[1].textContent.toLowerCase();
+          var hit = !needle || name.indexOf(needle) !== -1;
+          rows[i].classList.toggle("filtered", !hit);
+          if (hit) shown++;
+        }
+        var block = table.closest(".board-block");
+        if (block) block.hidden = shown === 0;
+      });
+    });
+
+    tables.forEach(function (table) {
+      var headers = table.tHead.rows[0].cells;
+      Array.prototype.forEach.call(headers, function (th, index) {
+        var kind = th.getAttribute("data-sort");
+        if (!kind) return;
+        th.tabIndex = 0;
+        var activate = function () {
+          var ascending = th.getAttribute("aria-sort") !== "ascending";
+          Array.prototype.forEach.call(headers, function (other) {
+            other.removeAttribute("aria-sort");
+          });
+          th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+
+          var body = table.tBodies[0];
+          var rows = Array.prototype.slice.call(body.rows);
+          rows.sort(function (a, b) {
+            var x = a.cells[index].textContent.trim();
+            var y = b.cells[index].textContent.trim();
+            var result =
+              kind === "number"
+                ? parseFloat(x) - parseFloat(y)
+                : x.localeCompare(y);
+            return ascending ? result : -result;
+          });
+          rows.forEach(function (row, position) {
+            row.cells[0].textContent = String(position + 1);
+            body.appendChild(row);
+          });
+        };
+        th.addEventListener("click", activate);
+        th.addEventListener("keydown", function (event) {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            activate();
+          }
+        });
+      });
+    });
+  }
+
+  // ---- weekly trend ------------------------------------------------------
+  var holder = document.getElementById("trend-data");
+  var canvas = document.getElementById("trend");
+  if (!holder || !canvas || typeof Chart === "undefined") return;
+
+  var points;
+  try {
+    points = JSON.parse(holder.textContent);
+  } catch (err) {
+    return;
+  }
+  if (!points || !points.length) return;
+
+  var chart = null;
+
+  function tokens() {
+    var css = getComputedStyle(document.documentElement);
+    var dark =
+      document.documentElement.getAttribute("data-theme") === "dark" ||
+      (document.documentElement.getAttribute("data-theme") !== "light" &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+    return {
+      ink: css.getPropertyValue("--ink-2").trim() || "#44535a",
+      muted: css.getPropertyValue("--ink-3").trim() || "#74838b",
+      line: css.getPropertyValue("--line").trim() || "#d8e0e3",
+      positive: dark ? "__POSITIVE_DARK__" : "__POSITIVE_LIGHT__",
+      negative: dark ? "__NEGATIVE_DARK__" : "__NEGATIVE_LIGHT__"
+    };
+  }
+
+  function draw() {
+    var t = tokens();
+    if (chart) chart.destroy();
+    chart = new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: {
+        labels: points.map(function (p) { return p.x; }),
+        datasets: [
+          {
+            data: points.map(function (p) { return p.y; }),
+            borderColor: t.positive,
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHoverBackgroundColor: t.positive,
+            tension: 0.15,
+            fill: {
+              target: { value: 0 },
+              above: t.positive + "22",
+              below: t.negative + "33"
+            }
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function (item) {
+                var v = item.parsed.y;
+                return (
+                  (v >= 0 ? "Beat" : "Lost to") +
+                  " the baseline by " +
+                  Math.abs(v).toFixed(1) +
+                  "%"
+                );
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: t.muted, maxTicksLimit: 10, autoSkip: true },
+            grid: { display: false },
+            border: { color: t.line }
+          },
+          y: {
+            title: {
+              display: true,
+              text: "Better than baseline (%)",
+              color: t.muted
+            },
+            ticks: {
+              color: t.muted,
+              callback: function (value) { return value + "%"; }
+            },
+            // Zero is the baseline itself, so it is drawn as a real reference
+            // line rather than one gridline among several.
+            grid: {
+              color: function (ctx) {
+                return ctx.tick && ctx.tick.value === 0 ? t.ink : t.line;
+              },
+              lineWidth: function (ctx) {
+                return ctx.tick && ctx.tick.value === 0 ? 1.5 : 1;
+              }
+            },
+            border: { color: t.line }
+          }
+        }
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", draw);
+  } else {
+    draw();
+  }
+  var media = window.matchMedia("(prefers-color-scheme: dark)");
+  if (media.addEventListener) media.addEventListener("change", draw);
+})();
+"""
+
 _FONT_LINKS: Final = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">\n'
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
@@ -569,6 +984,19 @@ _FONT_LINKS: Final = (
     "family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&"
     'family=IBM+Plex+Mono:wght@400;500;600&display=swap">'
 )
+
+
+def _script() -> str:
+    """The page's behaviour, with the validated series colours substituted in."""
+    out = _SCRIPT
+    for token, colour in (
+        ("__POSITIVE_LIGHT__", _CHART_INK["light"]["positive"]),
+        ("__NEGATIVE_LIGHT__", _CHART_INK["light"]["negative"]),
+        ("__POSITIVE_DARK__", _CHART_INK["dark"]["positive"]),
+        ("__NEGATIVE_DARK__", _CHART_INK["dark"]["negative"]),
+    ):
+        out = out.replace(token, colour)
+    return out
 
 
 def render_content(data: ReportData) -> str:
@@ -629,6 +1057,8 @@ def render_content(data: ReportData) -> str:
 {readings}
   </div>
 
+{_trend_section(card, data.predictor)}
+
   <h2>Where it is strong, and where it is not</h2>
   <p class="section-lede">Ranking quality by position. Higher means the order
   within that position is more reliable &mdash; comparing points missed across
@@ -646,7 +1076,9 @@ def render_content(data: ReportData) -> str:
     <span>Not affiliated with the NFL.</span>
     <span>Projections are estimates, not advice.</span>
   </footer>
-</div>"""
+</div>
+
+<script>{_script()}</script>"""
 
 
 def render_body(data: ReportData) -> str:
@@ -658,6 +1090,7 @@ def render_body(data: ReportData) -> str:
     return (
         f"<title>{PAGE_TITLE}</title>\n"
         f"{_FONT_LINKS}\n"
+        f"{_chart_lib_tag()}\n"
         f"<style>{_STYLE}</style>\n\n"
         f"{render_content(data)}"
     )
@@ -676,6 +1109,7 @@ def render_document(data: ReportData) -> str:
         'published accuracy track record.">\n'
         f"<title>{PAGE_TITLE}</title>\n"
         f"{_FONT_LINKS}\n"
+        f"{_chart_lib_tag()}\n"
         f"<style>{_STYLE}</style>\n"
         "</head>\n"
         "<body>\n"

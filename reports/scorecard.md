@@ -1,6 +1,6 @@
 # Projection scorecard
 
-- Generated: `2026-09-20T13:37:31.655117+00:00`
+- Generated: `2026-09-20T14:57:51.005819+00:00`
 - Universe: `active_recent`
 - Baseline: `season_to_date_mean`
 - Seasons: 2015-2025
@@ -71,3 +71,7 @@
 | weeks_5_plus   | last_game                       |    58176 |       148 | 4.8346 | 7.5710 | -0.1701 |     0.5737 |           0.4756 |              0.5371 |     -0.0853 |      -0.1800 |          -0.0141 |
 | weeks_5_plus   | season_to_date_mean_played_only |    58176 |       148 | 5.0608 | 6.9111 | -1.5723 |     0.5011 |           0.5085 |              0.7370 |     -0.1361 |      -0.0771 |          -0.1388 |
 | weeks_5_plus   | position_mean                   |    58176 |       148 | 6.1235 | 7.7047 | -0.5133 |   nan      |           0.2472 |              0.8680 |     -0.3747 |      -0.2008 |         nan      |
+
+## by_week
+
+1,267 rows across 181 weeks - see `scorecard.json` for the full series.

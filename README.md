@@ -71,6 +71,17 @@ function of the number. Prose hardcoded next to a live metric is a lie waiting
 to happen, so `report/interpret.py` is a set of typed rules with a test per
 band.
 
+The page also plots the `by_week` slice: every scored week against the baseline,
+**166 of 181 beaten, worst week −2.0%**. An eleven-season average says how good
+the system is; only the series shows the weeks it lost, which is the claim this
+project actually makes.
+
+One runtime dependency (Chart.js, pinned, from cdnjs) and no build step. The
+page is progressive enhancement throughout — the board, every reading and the
+full weekly series are in the HTML, and JavaScript only adds the chart, the
+player filter and column sorting. Controls that need it stay hidden until it
+runs, so with scripting off the page loses a picture and keeps every fact.
+
 ---
 
 ## Why you should believe the numbers
@@ -167,7 +178,7 @@ see.
 
 | Gate | Status |
 |---|---|
-| `pytest` | 191 tests (175 hermetic unit, 16 live-upstream) |
+| `pytest` | 205 tests (189 hermetic unit, 16 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
 | Coverage | 91% from unit tests alone, CI floor 85% |
