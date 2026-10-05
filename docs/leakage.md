@@ -156,6 +156,41 @@ returning `None`, because a silent `None` would be indistinguishable from
 The archive is therefore **committed to git**, unlike everything under `data/`,
 which is gitignored precisely because it is reproducible.
 
+### The cadence is itself a tested property
+
+Running this unattended for two weeks produced fifteen successful captures and
+*zero usable ones*. GitHub ran every scheduled job two to three and a half
+hours late, consistently, so the Sunday captures aimed at two hours before
+kickoff landed ninety minutes after it, and the Thursday capture aimed at
+pre-TNF landed after the game began. Every week ended up covered only by the
+previous Wednesday's report - a 23-hour-old view of a document that changes
+daily.
+
+Nothing failed, and that is the point. `as_of` is strict, so a late snapshot is
+never selected; it is simply inert. The workflow was green, the manifest grew,
+and the archive was accumulating evidence of nothing.
+
+The schedule now carries a four-hour delay budget and runs at :07 rather than
+:00. But a budget is an assumption, so `nflproj archive-health` checks it
+against reality: for each week that has kicked off and that the archive was
+running for, it reports the gap between the week's first kickoff and the latest
+snapshot preceding it, and exits non-zero past a 12-hour bound. The weekly
+workflow runs it as a separate job, so a cadence problem turns the run red
+without withholding the scorecard - trading one silent failure for another
+would be no improvement.
+
+Weeks predating the archive are reported and **never** failed. That absence is
+honest, and a check that cries wolf about it is a check nobody reads.
+
+One limitation this exposed, and does not fix: because a week's cutoff is its
+*first* kickoff, and most weeks open on Thursday night, Friday's final injury
+designations can never be used for that week - even though they precede the
+Sunday games that 95% of players are in. That is conservative rather than
+wrong, and the fix is per-game rather than per-week publication, which is a
+real change to what "the board" means. Captures cannot be backfilled but the
+cutoff rule can be changed later, so the cadence captures Friday, Saturday and
+Sunday morning regardless.
+
 ## 5. The target is computed, not inherited
 
 Fantasy points are recomputed from box-score components by `nflproj.scoring`

@@ -88,6 +88,24 @@ jobs:
         with:
           path: reports/
 
+  # Deliberately NOT a step inside `scorecard`, and with no `needs`: a cadence
+  # problem must turn the run red without stopping the track record from being
+  # committed and deployed. The scorecard does not depend on the archive, and
+  # coupling them would mean a monitoring failure silently withheld the public
+  # page - trading one silent failure for another.
+  archive-health:
+    name: archive cadence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.17"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: the archive actually holds pre-kickoff snapshots
+        run: uv run nflproj archive-health
+
   deploy:
     needs: scorecard
     if: inputs.deploy != false

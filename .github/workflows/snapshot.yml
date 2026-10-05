@@ -17,16 +17,27 @@ name: Injury snapshot
 
 on:
   schedule:
-    # All times UTC. GitHub runs scheduled jobs late under load, which is safe
-    # here by construction: `as_of` is strict, so a capture that lands after
-    # kickoff is simply never used for that week rather than leaking into it.
-    - cron: "0 23 * * 3" # Wed - first practice report of the week
-    - cron: "0 22 * * 4" # Thu - before Thursday night football (00:15 UTC)
-    - cron: "0 22 * * 5" # Fri - final game-status designations
-    - cron: "0 17 * * 6" # Sat - late-season Saturday slates
-    - cron: "0 15 * * 0" # Sun - two hours out from the 1pm ET window
-    - cron: "0 16 * * 0" # Sun - last call before 17:00 UTC kickoffs
-    - cron: "0 22 * * 1" # Mon - before Monday night football
+    # All times UTC, and all deliberately EARLY. GitHub runs scheduled jobs
+    # late under load - measured at 2.0 to 3.5 hours late across the first
+    # fifteen runs of this workflow, every single time. The original schedule
+    # budgeted nothing for that, so the Sunday captures aimed at 15:00 and
+    # 16:00 landed at 18:33-19:27, after the 17:00 kickoff, and the Thursday
+    # capture aimed at 22:00 landed after Thursday night football. Fifteen
+    # green runs; every week covered only by a 23-hour-old report.
+    #
+    # These times carry a four-hour delay budget, and the minute is :07 rather
+    # than :00 because the top of the hour is the most congested slot. The
+    # assumption is no longer taken on trust: `nflproj archive-health` fails
+    # the weekly run if a week ends up covered only by a stale snapshot.
+    - cron: "7 17 * * 3" # Wed - first practice report, well clear of TNF
+    - cron: "7 15 * * 4" # Thu - last call before Thursday night football
+    - cron: "7 15 * * 5" # Fri - final game-status designations
+    - cron: "7 10 * * 6" # Sat
+    - cron: "7 6 * * 0" # Sun - early, in case everything after it slips
+    - cron: "7 9 * * 0" # Sun
+    - cron: "7 11 * * 0" # Sun
+    - cron: "7 13 * * 0" # Sun - tightest attempt at the 1pm ET inactive list
+    - cron: "7 15 * * 1" # Mon - before Monday night football
   workflow_dispatch:
     inputs:
       season:

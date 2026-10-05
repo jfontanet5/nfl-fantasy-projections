@@ -11,6 +11,7 @@ the boundary conditions rather than the happy path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -25,10 +26,13 @@ from nflproj.config import Settings
 from nflproj.ingest.archive import (
     INJURIES,
     Archive,
+    Observation,
+    coverage,
     depth_chart_as_of,
     first_kickoff,
     injuries_before_kickoff,
     snapshot_season,
+    stale_weeks,
 )
 from nflproj.ingest.nflverse import IngestError
 
@@ -369,3 +373,156 @@ def test_depth_chart_as_of_rejects_a_frame_without_dt(depth_charts):
     """If upstream drops the column, the point-in-time claim is void - say so."""
     with pytest.raises(KeyError, match="dt"):
         depth_chart_as_of(depth_charts.drop(columns=["dt"]), _at(12))
+
+
+# ------------------------------------------------------------ cadence health
+
+
+def _utc(day: int, hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 9, day, hour, minute, tzinfo=UTC)
+
+
+def _observe(archive: Archive, when: datetime, body: bytes) -> None:
+    """Record an observation at a chosen instant, with no network and no clock."""
+    digest = hashlib.sha256(body).hexdigest()
+    archive.blob_dir.mkdir(parents=True, exist_ok=True)
+    archive.blob_path(digest).write_bytes(body)
+    # capture() is covered above; this seeds history at a chosen instant.
+    archive._append(
+        Observation(
+            asset=archive.asset.name,
+            season=2026,
+            fetched_at=when.isoformat(),
+            sha256=digest,
+            rows=1,
+            source_url="https://example.invalid/injuries_2026.parquet",
+            novel=True,
+        )
+    )
+
+
+@pytest.fixture
+def health_calendar() -> pd.DataFrame:
+    """Three weeks, each opening with a Thursday night game, as the NFL does.
+
+    The Thursday opener is the whole point: it makes the week's first kickoff
+    land on Thursday night, so a Friday capture postdates it.
+    """
+    rows = [
+        (2026, 3, "2026-09-17 20:15"),  # -> 2026-09-18 00:15Z
+        (2026, 3, "2026-09-20 13:00"),
+        (2026, 4, "2026-09-24 20:15"),  # -> 2026-09-25 00:15Z
+        (2026, 4, "2026-09-27 13:00"),
+        (2026, 5, "2026-10-01 20:15"),  # -> 2026-10-02 00:15Z
+        (2026, 5, "2026-10-04 13:00"),
+    ]
+    frame = pd.DataFrame(rows, columns=["season", "week", "gametime"])
+    frame["kickoff_et"] = pd.to_datetime(frame["gametime"]).dt.tz_localize("America/New_York")
+    return frame.drop(columns=["gametime"])
+
+
+#: Placed so week 3 predates the archive and week 4 does not, which is what
+#: lets these tests say something about one week at a time.
+SEED = _utc(18, 12)
+
+
+def test_the_production_failure_is_caught(archive, health_calendar):
+    """The real one, with the real timings.
+
+    Fifteen consecutive workflow runs succeeded, the manifest grew, and week 4
+    ended up covered only by a report from the previous Wednesday - because
+    GitHub ran every scheduled job two to three hours late and the week opens
+    on Thursday night. Nothing failed anywhere: `as_of` is strict, so a late
+    snapshot is simply never selected, which is correct and silent.
+
+    Timings mirror the observed manifest: a capture at 01:10Z Thursday (meant
+    for Wednesday evening), then one at 00:22Z Friday that misses the 00:15Z
+    kickoff by seven minutes, then Sunday's, long after.
+    """
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(24, 1, 10), b"wed-late")
+    _observe(archive, _utc(25, 0, 22), b"thu-late")
+    _observe(archive, _utc(27, 18, 55), b"sun-late")
+
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(28, 12))
+    wk4 = next(r for r in rows if r.week == 4)
+
+    assert wk4.judged is True
+    assert wk4.latest_before == _utc(24, 1, 10), "the 00:22Z capture postdates kickoff"
+    assert wk4.gap_hours == pytest.approx(23.08, abs=0.05)
+    assert wk4.stale() is True, "a 23-hour-old report is the failure that went unnoticed"
+    assert wk4 in stale_weeks(rows)
+
+
+def test_a_timely_capture_is_not_stale(archive, health_calendar):
+    """What the corrected cadence is supposed to produce."""
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(24, 18), b"thu-ok")  # 6.25h before the 00:15Z kickoff
+
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(28, 12))
+    wk4 = next(r for r in rows if r.week == 4)
+    assert wk4.gap_hours == pytest.approx(6.25, abs=0.05)
+    assert wk4.stale() is False
+    assert stale_weeks(rows) == []
+
+
+def test_the_latest_capture_before_kickoff_wins(archive, health_calendar):
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(22, 18), b"older")
+    _observe(archive, _utc(24, 18), b"newer")
+
+    wk4 = next(
+        r for r in coverage(archive, health_calendar, season=2026, now=_utc(28, 12)) if r.week == 4
+    )
+    assert wk4.latest_before == _utc(24, 18)
+    assert wk4.sha256 == hashlib.sha256(b"newer").hexdigest()
+
+
+def test_weeks_predating_the_archive_are_reported_but_never_failed(archive, health_calendar):
+    """An honest absence must not fail the build, or the check gets ignored."""
+    _observe(archive, SEED, b"seed")
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(28, 12))
+
+    wk3 = next(r for r in rows if r.week == 3)
+    assert wk3.judged is False
+    assert wk3.reason == "predates the archive"
+    assert wk3.stale() is False
+    assert all(r.week != 3 for r in stale_weeks(rows))
+
+
+def test_a_judged_week_with_no_snapshot_at_all_is_stale(archive, health_calendar):
+    """Distinct from a stale snapshot, and both must fail."""
+    _observe(archive, SEED, b"seed")
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(28, 12))
+    wk4 = next(r for r in rows if r.week == 4)
+    # The seed is the only capture, 6.0 days before week 4 - present but ancient.
+    assert wk4.latest_before == SEED
+    assert wk4.stale() is True
+
+
+def test_upcoming_weeks_are_not_judged(archive, health_calendar):
+    _observe(archive, SEED, b"seed")
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(19, 12))
+
+    wk5 = next(r for r in rows if r.week == 5)
+    assert wk5.judged is False
+    assert wk5.reason == "upcoming"
+    assert wk5.stale() is False
+
+
+def test_an_empty_archive_judges_nothing(archive, health_calendar):
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(28, 12))
+    assert rows
+    assert all(not r.judged for r in rows)
+    assert stale_weeks(rows) == []
+
+
+def test_the_bound_is_adjustable(archive, health_calendar):
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(24, 1, 10), b"wed-late")
+
+    wk4 = next(
+        r for r in coverage(archive, health_calendar, season=2026, now=_utc(28, 12)) if r.week == 4
+    )
+    assert wk4.stale(max_gap=timedelta(hours=12)) is True
+    assert wk4.stale(max_gap=timedelta(hours=48)) is False

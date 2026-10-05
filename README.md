@@ -143,8 +143,13 @@ Friday's *questionable* becomes Sunday's *inactive*, and each overwrite destroys
 the last. By Tuesday the only surviving version is the post-game one, which is
 the single state a projection may never see, because it encodes who played.
 
-So `nflproj snapshot` runs seven times a week on a pre-kickoff cadence and
-commits what it saw. The snapshots are content-addressed, so an unchanged report
+So `nflproj snapshot` runs nine times a week on a pre-kickoff cadence and
+commits what it saw. Those times are deliberately early: run unattended for two
+weeks, the first schedule produced fifteen green runs and *zero usable
+captures*, because GitHub ran every job two to three hours late and the weeks
+open on Thursday night. `nflproj archive-health` now fails the weekly run if a
+week ends up covered only by a stale snapshot, so the cadence is a tested
+property rather than an assumption. The snapshots are content-addressed, so an unchanged report
 costs one line in a JSONL manifest rather than another copy of the file — and a
 no-change capture is still evidence, because it pins down that the report did
 not move between two known times. Reads are strictly *before* a cutoff, never at
@@ -176,6 +181,7 @@ uv run nflproj backtest --seasons 2015-2025        # walk-forward + scorecard
 uv run nflproj project 2026 --week 3               # project an upcoming week
 uv run nflproj report                              # render the public page
 uv run nflproj snapshot                            # record today's injury report
+uv run nflproj archive-health                      # did the captures land pre-kickoff?
 uv run nflproj publish                             # write a versioned model bundle
 uv run nflproj serve                               # serve it over HTTP
 ```
@@ -275,10 +281,10 @@ Full argument, including what is deliberately *not* done:
 
 | Gate | Status |
 |---|---|
-| `pytest` | 323 tests (303 hermetic unit, 20 live-upstream) |
+| `pytest` | 333 tests (313 hermetic unit, 20 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
-| Coverage | 92% from unit tests alone, CI floor 85% |
+| Coverage | 91% from unit tests alone, CI floor 85% |
 | Container | multi-stage, non-root; published to GHCR from `main` |
 | Kubernetes | CI deploys the real manifests to a kind cluster and asserts the Service returns a projection |
 

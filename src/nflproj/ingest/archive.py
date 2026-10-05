@@ -65,6 +65,13 @@ DEPTH_CHARTS = Asset(name="depth_charts", release="depth_charts", stem="depth_ch
 MANIFEST_NAME: Final = "manifest.jsonl"
 BLOB_DIR: Final = "blobs"
 
+#: How stale the last pre-kickoff snapshot may be before the archive is judged
+#: to have missed the week. The cadence aims for a capture a few hours out; a
+#: gap this large means a scheduled run was skipped or landed after kickoff,
+#: which is the failure this bound exists to make loud. Observed once in
+#: production at 23h, silently, across fifteen green workflow runs.
+DEFAULT_MAX_GAP: Final = timedelta(hours=12)
+
 #: How close a kickoff has to be for a snapshot to be worth taking. Injury
 #: reports only move in the days around a game; capturing in June would append
 #: manifest lines forever to record that nothing changed. Three days keeps every
@@ -321,3 +328,104 @@ def depth_chart_as_of(depth_charts: pd.DataFrame, cutoff: datetime) -> pd.DataFr
     # would produce a chart that never existed.
     latest = observed[earlier].max()
     return depth_charts[earlier & (observed == latest)]
+
+
+# ------------------------------------------------------------------- health
+
+
+@dataclass(frozen=True, slots=True)
+class WeekCoverage:
+    """Whether the archive holds a usable snapshot for one week."""
+
+    season: int
+    week: int
+    first_kickoff: datetime
+    latest_before: datetime | None
+    sha256: str | None
+    #: False for weeks nobody could have covered: those that predate the
+    #: archive's first observation, and those that have not kicked off yet.
+    #: Judging either would turn an honest absence into a failure.
+    judged: bool
+    reason: str
+
+    @property
+    def gap(self) -> timedelta | None:
+        if self.latest_before is None:
+            return None
+        return self.first_kickoff - self.latest_before
+
+    @property
+    def gap_hours(self) -> float | None:
+        gap = self.gap
+        return None if gap is None else gap.total_seconds() / 3600.0
+
+    def stale(self, *, max_gap: timedelta = DEFAULT_MAX_GAP) -> bool:
+        """Judged, and either uncovered or covered only by a stale snapshot."""
+        if not self.judged:
+            return False
+        return self.gap is None or self.gap > max_gap
+
+
+def coverage(
+    archive: Archive,
+    calendar: pd.DataFrame,
+    *,
+    season: int,
+    now: datetime | None = None,
+) -> list[WeekCoverage]:
+    """How well the archive covers each week of a season, week by week.
+
+    The archive's whole value is holding a snapshot taken shortly *before* a
+    week's first kickoff. Whether it actually does is not visible from the
+    manifest - fifteen consecutive successful captures can still leave every
+    week uncovered if each one landed late, which is exactly what happened the
+    first time this ran unattended. Nothing failed, because a late snapshot is
+    merely never selected by :meth:`Archive.as_of`.
+
+    So this reconstructs the question :meth:`Archive.as_of` will be asked later
+    and reports the answer now, while it can still be fixed.
+    """
+    now = now or datetime.now(UTC)
+    observations = archive.observations()
+    archive_begins = observations[0].fetched_at_dt if observations else None
+
+    weeks = sorted(int(w) for w in calendar.loc[calendar["season"] == season, "week"].unique())
+    out: list[WeekCoverage] = []
+    for week in weeks:
+        kickoff = first_kickoff(calendar, season, week)
+        if kickoff is None:
+            continue
+
+        before = [o for o in observations if o.fetched_at_dt < kickoff]
+        latest = before[-1] if before else None
+
+        if kickoff > now:
+            judged, reason = False, "upcoming"
+        elif archive_begins is None:
+            judged, reason = False, "archive is empty"
+        elif kickoff <= archive_begins:
+            judged, reason = False, "predates the archive"
+        else:
+            judged, reason = True, "covered" if latest else "no snapshot before kickoff"
+
+        out.append(
+            WeekCoverage(
+                season=season,
+                week=week,
+                first_kickoff=kickoff,
+                latest_before=latest.fetched_at_dt if latest else None,
+                sha256=latest.sha256 if latest else None,
+                judged=judged,
+                reason=reason,
+            )
+        )
+    return out
+
+
+def stale_weeks(
+    rows: list[WeekCoverage],
+    *,
+    max_gap: timedelta = DEFAULT_MAX_GAP,
+) -> list[WeekCoverage]:
+    """The weeks a caller should treat as a failure."""
+    return [r for r in rows if r.stale(max_gap=max_gap)]

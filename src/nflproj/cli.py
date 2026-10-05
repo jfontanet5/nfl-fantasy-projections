@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -24,7 +25,15 @@ from nflproj.features.calendar import (
 )
 from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, UniversePolicy, build_panel
 from nflproj.ingest import nflverse as nv
-from nflproj.ingest.archive import INJURIES, Archive, first_kickoff, snapshot_season
+from nflproj.ingest.archive import (
+    DEFAULT_MAX_GAP,
+    INJURIES,
+    Archive,
+    coverage,
+    first_kickoff,
+    snapshot_season,
+    stale_weeks,
+)
 from nflproj.ingest.manifest import Manifest
 from nflproj.logging import configure_logging, get_logger
 from nflproj.predictors.baselines import (
@@ -347,6 +356,65 @@ def snapshot(
         f"{observation.asset} {observation.season}: {observation.rows} rows, "
         f"sha256 {observation.sha256[:12]} ({state})"
     )
+
+
+@app.command(name="archive-health")
+def archive_health(
+    season: Annotated[
+        int | None, typer.Argument(help="Season to audit. Defaults to the one in progress.")
+    ] = None,
+    max_gap_hours: Annotated[
+        float, typer.Option(help="How stale the last pre-kickoff snapshot may be.")
+    ] = DEFAULT_MAX_GAP.total_seconds() / 3600.0,
+) -> None:
+    """Audit whether the archive actually holds pre-kickoff snapshots.
+
+    A capture that lands after kickoff is not an error anywhere: the workflow
+    succeeds, the manifest grows, and `as_of` simply never selects it. That is
+    correct behaviour and it is also how fifteen consecutive green runs left
+    every week of the season covered only by a 23-hour-old report.
+
+    So the cadence gets a test. Exits non-zero when a week that has kicked off,
+    and that the archive was running for, has no snapshot within the bound.
+    Weeks that predate the archive are reported and not judged - that absence
+    is honest, and failing on it would train us to ignore this.
+    """
+    settings = get_settings()
+    calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
+    season = season if season is not None else current_season(calendar)
+    if season is None:
+        msg = "no season has started yet; pass one explicitly"
+        raise typer.BadParameter(msg)
+
+    archive = Archive(settings.archive_dir, INJURIES)
+    rows = coverage(archive, calendar, season=season)
+    bound = timedelta(hours=max_gap_hours)
+
+    typer.echo(
+        f"{'week':<6}{'first kickoff (UTC)':<22}{'latest snapshot before':<24}{'gap':>8}  note"
+    )
+    for r in rows:
+        # Only judged weeks get a gap. For an upcoming week the "gap" to the
+        # latest snapshot is a number with no meaning, and printing 1254.0h
+        # next to week 13 in October invites exactly the wrong conclusion.
+        seen = r.latest_before if r.judged else None
+        latest = seen.strftime("%Y-%m-%d %H:%M") if seen is not None else "-"
+        gap = f"{r.gap_hours:.1f}h" if seen is not None and r.gap_hours is not None else "-"
+        note = r.reason if not r.judged else ("STALE" if r.stale(max_gap=bound) else "ok")
+        kickoff = r.first_kickoff.strftime("%Y-%m-%d %H:%M")
+        typer.echo(f"{r.week:<6}{kickoff:<22}{latest:<22}{gap:>8}  {note}")
+
+    bad = stale_weeks(rows, max_gap=bound)
+    judged = [r for r in rows if r.judged]
+    typer.echo(
+        f"\n{len(judged) - len(bad)} of {len(judged)} judged weeks "
+        f"covered within {max_gap_hours:g}h"
+    )
+    if bad:
+        weeks = ", ".join(str(r.week) for r in bad)
+        typer.echo(f"stale or uncovered: weeks {weeks}")
+        log.error("archive.stale", season=season, weeks=[r.week for r in bad])
+        raise typer.Exit(code=1)
 
 
 @app.command()
