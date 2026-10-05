@@ -182,6 +182,15 @@ would be no improvement.
 Weeks predating the archive are reported and **never** failed. That absence is
 honest, and a check that cries wolf about it is a check nobody reads.
 
+The same reasoning narrows the gate itself. A week whose captures were missed
+cannot be repaired - the snapshots do not exist and cannot be recreated - so
+judging all history would leave the weekly run red for the rest of the season
+over something nobody can fix. That is the cries-wolf failure wearing a
+different hat. The report lists every week and marks the stale ones; only the
+**most recent judged week** decides the exit code, because "is the cadence
+broken *now*" is the only version of the question you can act on.
+`--all-weeks` judges everything, for an on-demand audit of a whole season.
+
 One limitation this exposed, and does not fix: because a week's cutoff is its
 *first* kickoff, and most weeks open on Thursday night, Friday's final injury
 designations can never be used for that week - even though they precede the

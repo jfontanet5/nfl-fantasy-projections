@@ -72,6 +72,15 @@ BLOB_DIR: Final = "blobs"
 #: production at 23h, silently, across fifteen green workflow runs.
 DEFAULT_MAX_GAP: Final = timedelta(hours=12)
 
+#: How many of the most recent judged weeks the gate considers.
+#:
+#: One, because the only actionable version of "is the cadence broken" is about
+#: now. A gate that judges all history would stay red for the rest of a season
+#: over weeks whose captures cannot be recreated, and a permanently red check
+#: teaches you to ignore it - which is worse than having no check. The report
+#: still lists every week; only the exit code is narrowed.
+GATED_WEEKS: Final = 1
+
 #: How close a kickoff has to be for a snapshot to be worth taking. Injury
 #: reports only move in the days around a game; capturing in June would append
 #: manifest lines forever to record that nothing changed. Three days keeps every
@@ -426,6 +435,16 @@ def stale_weeks(
     rows: list[WeekCoverage],
     *,
     max_gap: timedelta = DEFAULT_MAX_GAP,
+    recent: int | None = GATED_WEEKS,
 ) -> list[WeekCoverage]:
-    """The weeks a caller should treat as a failure."""
-    return [r for r in rows if r.stale(max_gap=max_gap)]
+    """The weeks a caller should treat as a failure.
+
+    Only the most recent ``recent`` judged weeks are eligible, because a week
+    whose captures were missed cannot be repaired and gating on it forever
+    would make the check noise. ``recent=None`` judges every week, which is
+    what an on-demand audit of the whole season wants.
+    """
+    judged = [r for r in rows if r.judged]
+    if recent is not None:
+        judged = judged[-recent:]
+    return [r for r in judged if r.stale(max_gap=max_gap)]

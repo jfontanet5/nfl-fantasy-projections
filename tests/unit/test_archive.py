@@ -378,8 +378,8 @@ def test_depth_chart_as_of_rejects_a_frame_without_dt(depth_charts):
 # ------------------------------------------------------------ cadence health
 
 
-def _utc(day: int, hour: int, minute: int = 0) -> datetime:
-    return datetime(2026, 9, day, hour, minute, tzinfo=UTC)
+def _utc(day: int, hour: int, minute: int = 0, month: int = 9) -> datetime:
+    return datetime(2026, month, day, hour, minute, tzinfo=UTC)
 
 
 def _observe(archive: Archive, when: datetime, body: bytes) -> None:
@@ -526,3 +526,46 @@ def test_the_bound_is_adjustable(archive, health_calendar):
     )
     assert wk4.stale(max_gap=timedelta(hours=12)) is True
     assert wk4.stale(max_gap=timedelta(hours=48)) is False
+
+
+def test_the_gate_judges_only_the_most_recent_week(archive, health_calendar):
+    """A missed week cannot be repaired, so gating on it forever is noise.
+
+    This is the cries-wolf failure in its own right: a check that is red for
+    the rest of a season over captures nobody can recreate is a check you stop
+    reading, which leaves you worse off than having none.
+    """
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(24, 1, 10), b"wk4-late")  # week 4 missed: 23.1h
+    # Week 5 opens 2026-10-02 00:15Z; this is 6.25h out.
+    _observe(archive, _utc(1, 18, month=10), b"wk5-ok")
+
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(2, 23, month=10))
+    wk4 = next(r for r in rows if r.week == 4)
+    wk5 = next(r for r in rows if r.week == 5)
+
+    # Both are reported, and week 4 is still stale as a fact about the archive.
+    assert wk4.stale() is True
+    assert wk5.stale() is False
+    # But only the most recent judged week decides the exit code.
+    assert stale_weeks(rows) == []
+
+
+def test_a_fresh_miss_fails_the_gate_immediately(archive, health_calendar):
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(24, 18), b"wk4-ok")  # week 4 covered, 6.25h out
+    # Nothing new before week 5's 2026-10-02 00:15Z kickoff: 7 days stale.
+
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(2, 23, month=10))
+    assert next(r for r in rows if r.week == 4).stale() is False
+    assert [r.week for r in stale_weeks(rows)] == [5]
+
+
+def test_an_audit_can_judge_every_week(archive, health_calendar):
+    """`recent=None` is the on-demand whole-season audit, not the weekly gate."""
+    _observe(archive, SEED, b"seed")
+    _observe(archive, _utc(24, 1, 10), b"wk4-late")
+    _observe(archive, _utc(1, 18, month=10), b"wk5-ok")
+
+    rows = coverage(archive, health_calendar, season=2026, now=_utc(2, 23, month=10))
+    assert [r.week for r in stale_weeks(rows, recent=None)] == [4]

@@ -27,6 +27,7 @@ from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, UniversePolicy, build
 from nflproj.ingest import nflverse as nv
 from nflproj.ingest.archive import (
     DEFAULT_MAX_GAP,
+    GATED_WEEKS,
     INJURIES,
     Archive,
     coverage,
@@ -366,6 +367,9 @@ def archive_health(
     max_gap_hours: Annotated[
         float, typer.Option(help="How stale the last pre-kickoff snapshot may be.")
     ] = DEFAULT_MAX_GAP.total_seconds() / 3600.0,
+    all_weeks: Annotated[
+        bool, typer.Option(help="Fail on any stale week, not just the most recent.")
+    ] = False,
 ) -> None:
     """Audit whether the archive actually holds pre-kickoff snapshots.
 
@@ -389,6 +393,9 @@ def archive_health(
     archive = Archive(settings.archive_dir, INJURIES)
     rows = coverage(archive, calendar, season=season)
     bound = timedelta(hours=max_gap_hours)
+    recent = None if all_weeks else GATED_WEEKS
+    judged = [r for r in rows if r.judged]
+    gated = {(r.season, r.week) for r in (judged if all_weeks else judged[-GATED_WEEKS:])}
 
     typer.echo(
         f"{'week':<6}{'first kickoff (UTC)':<22}{'latest snapshot before':<24}{'gap':>8}  note"
@@ -400,15 +407,22 @@ def archive_health(
         seen = r.latest_before if r.judged else None
         latest = seen.strftime("%Y-%m-%d %H:%M") if seen is not None else "-"
         gap = f"{r.gap_hours:.1f}h" if seen is not None and r.gap_hours is not None else "-"
-        note = r.reason if not r.judged else ("STALE" if r.stale(max_gap=bound) else "ok")
+        if not r.judged:
+            note = r.reason
+        elif not r.stale(max_gap=bound):
+            note = "ok"
+        else:
+            # Reported either way; only the recent ones decide the exit code.
+            note = "STALE" if (r.season, r.week) in gated else "STALE (past, not gated)"
         kickoff = r.first_kickoff.strftime("%Y-%m-%d %H:%M")
         typer.echo(f"{r.week:<6}{kickoff:<22}{latest:<22}{gap:>8}  {note}")
 
-    bad = stale_weeks(rows, max_gap=bound)
-    judged = [r for r in rows if r.judged]
+    bad = stale_weeks(rows, max_gap=bound, recent=recent)
+    covered = sum(1 for r in judged if not r.stale(max_gap=bound))
+    scope = "all judged weeks" if all_weeks else f"the last {GATED_WEEKS} judged week(s)"
     typer.echo(
-        f"\n{len(judged) - len(bad)} of {len(judged)} judged weeks "
-        f"covered within {max_gap_hours:g}h"
+        f"\n{covered} of {len(judged)} judged weeks covered within "
+        f"{max_gap_hours:g}h; gate considers {scope}"
     )
     if bad:
         weeks = ", ".join(str(r.week) for r in bad)
