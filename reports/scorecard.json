@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-06T18:15:44.514943+00:00",
+  "generated_at": "2026-10-06T20:44:10.164285+00:00",
   "schema_version": "2",
   "universe": "active_recent",
   "baseline": "season_to_date_mean",
@@ -32,7 +32,7 @@
       "player_stats/2024": "847569d194ca3d96b5efcf91e6eac5e18780fc47568a713fd545a82d29d155c1",
       "player_stats/2025": "2a461becaa9adb3c93a3074a3a31f1e960162a50163371a2d34e28393b5fff10",
       "player_stats/2026": "c4dfe827c76b1fd2ef24b9a4f7b3802bcbb772f404c8f9d71bb84c095e4f504d",
-      "schedules": "d541ec495d089ad1c803826880f40b7326c0aedf1771ab64c0f542bab9490efe"
+      "schedules": "dbce02c5371a3dc0ebe19accf45c993d8401a2b581e3295174bfad07cadc88f9"
     },
     "panel_rows": 76882,
     "seasons_requested": [
