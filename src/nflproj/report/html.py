@@ -752,6 +752,11 @@ _STYLE: Final = """
 # ---------------------------------------------------------------- page
 
 
+#: Name of the meta tag carrying the scorecard timestamp the page was built
+#: from. Read by `nflproj page-health` to detect a page that has stopped
+#: being deployed - see render_document.
+GENERATED_AT_META: Final = "nflproj:generated-at"
+
 PAGE_TITLE: Final = "The Sunday Board"
 
 #: Pinned, loaded from cdnjs, and the page's only runtime dependency. Everything
@@ -1142,6 +1147,12 @@ def render_document(data: ReportData) -> str:
         'viewport-fit=cover">\n'
         '<meta name="description" content="Weekly NFL fantasy projections with a '
         'published accuracy track record.">\n'
+        # Machine-readable freshness. Without this nothing could tell a page
+        # that had stopped updating from one that was current: the deploy job
+        # silently skipped on every scheduled run for 16 days while the
+        # workflow reported success, and the only evidence was a date rendered
+        # for humans halfway down the page. `nflproj page-health` reads this.
+        f'<meta name="{GENERATED_AT_META}" content="{_esc(data.generated_at)}">\n'
         f"<title>{PAGE_TITLE}</title>\n"
         f"{_FONT_LINKS}\n"
         f"{_chart_lib_tag()}\n"

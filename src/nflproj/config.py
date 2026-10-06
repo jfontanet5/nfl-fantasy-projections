@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("data"))
     reports_dir: Path = Field(default=Path("reports"))
 
+    #: Where the public page is deployed. Overridable so a fork checks its own.
+    page_url: str = Field(default="https://jfontanet5.github.io/nfl-fantasy-projections/")
+
     #: Point-in-time snapshots of upstream tables that are rewritten in place.
     #: Deliberately *outside* ``data_dir``: everything under ``data`` is a cache
     #: reproducible from the manifest and is gitignored, whereas the archive is

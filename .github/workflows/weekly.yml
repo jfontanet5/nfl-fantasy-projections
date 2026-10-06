@@ -106,9 +106,25 @@ jobs:
       - name: the archive actually holds pre-kickoff snapshots
         run: uv run nflproj archive-health
 
+      # Checks LAST week's deploy, since this job runs beside the one that
+      # publishes. A one-week lag to notice is the cost of not needing to
+      # serialise the jobs, and it is a great deal better than 16 days.
+      - name: the public page is still being deployed
+        if: always()
+        run: uv run nflproj page-health
+
   deploy:
     needs: scorecard
-    if: inputs.deploy != false
+    # `inputs.deploy` does not exist on a schedule trigger - it evaluates to the
+    # empty string, and GitHub coerces '' and false to the same value. So the
+    # obvious `inputs.deploy != false` is FALSE on every scheduled run, and this
+    # job silently skipped for 16 days while the workflow reported success and
+    # the scorecard was committed on time. The public page sat at the one
+    # manual run from 2026-09-20.
+    #
+    # Written the other way round: deploy unless a human explicitly unticked the
+    # box. A missing input can then only ever mean "deploy", never "skip".
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.deploy }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

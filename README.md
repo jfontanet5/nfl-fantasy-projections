@@ -182,6 +182,7 @@ uv run nflproj project 2026 --week 3               # project an upcoming week
 uv run nflproj report                              # render the public page
 uv run nflproj snapshot                            # record today's injury report
 uv run nflproj archive-health                      # did the captures land pre-kickoff?
+uv run nflproj page-health                         # is the public page still deploying?
 uv run nflproj publish                             # write a versioned model bundle
 uv run nflproj serve                               # serve it over HTTP
 ```
@@ -281,10 +282,10 @@ Full argument, including what is deliberately *not* done:
 
 | Gate | Status |
 |---|---|
-| `pytest` | 333 tests (313 hermetic unit, 20 live-upstream) |
+| `pytest` | 344 tests (324 hermetic unit, 20 live-upstream) |
 | `mypy --strict` | clean on `src`, no `type: ignore` |
 | `ruff` | clean, ~20 rule families |
-| Coverage | 91% from unit tests alone, CI floor 85% |
+| Coverage | 90% from unit tests alone, CI floor 85% |
 | Container | multi-stage, non-root; published to GHCR from `main` |
 | Kubernetes | CI deploys the real manifests to a kind cluster and asserts the Service returns a projection |
 

@@ -42,6 +42,7 @@ from nflproj.predictors.baselines import (
     PUBLISHED_PREDICTOR_NAME,
     default_baselines,
 )
+from nflproj.report.health import DEFAULT_MAX_AGE, PageHealthError, fetch_page_health
 from nflproj.report.html import build_report_data, render_document
 from nflproj.serving.bundle import write_bundle
 
@@ -357,6 +358,43 @@ def snapshot(
         f"{observation.asset} {observation.season}: {observation.rows} rows, "
         f"sha256 {observation.sha256[:12]} ({state})"
     )
+
+
+@app.command(name="page-health")
+def page_health(
+    url: Annotated[str | None, typer.Option(help="Page to check. Defaults to settings.")] = None,
+    max_age_days: Annotated[
+        float, typer.Option(help="How stale the deployed page may be.")
+    ] = DEFAULT_MAX_AGE.total_seconds() / 86400.0,
+) -> None:
+    """Check that the public page is still being deployed.
+
+    The weekly workflow reported success for three consecutive scheduled runs
+    while deploying nothing, because the deploy job's condition referenced an
+    input that does not exist on a schedule trigger. The scorecard was
+    committed on time and the run was green; only the page was stale, and
+    nothing was looking at the page.
+
+    A run's exit status describes the run. This reads the artifact.
+    """
+    settings = get_settings()
+    target = url or settings.page_url
+    try:
+        health = fetch_page_health(target)
+    except PageHealthError as exc:
+        typer.echo(f"page health unknown: {exc}")
+        log.error("page.unreadable", url=target, error=str(exc))
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"{target}")
+    typer.echo(f"  built from a scorecard generated {health.generated_at.isoformat()}")
+    typer.echo(f"  age {health.age_days:.1f} days (bound {max_age_days:g})")
+
+    if health.stale(max_age=timedelta(days=max_age_days)):
+        typer.echo("STALE: the page has stopped being deployed")
+        log.error("page.stale", url=target, age_days=round(health.age_days, 2))
+        raise typer.Exit(code=1)
+    typer.echo("ok")
 
 
 @app.command(name="archive-health")
