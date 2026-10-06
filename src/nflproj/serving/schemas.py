@@ -56,6 +56,13 @@ class Provenance(BaseModel):
         default_factory=dict,
         description="The predictor's measured track record when the bundle was built.",
     )
+    injuries: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Designation counts behind this board. Empty means none were available, "
+            "which is not the same as nobody being hurt."
+        ),
+    )
 
 
 class Projection(BaseModel):
@@ -70,7 +77,21 @@ class Projection(BaseModel):
     opponent: str | None = None
     season: int
     week: int
-    projected_points: float = Field(description="Full-PPR fantasy points.")
+    projected_points: float = Field(description="Full-PPR fantasy points, availability-adjusted.")
+    injury_status: str | None = Field(
+        default=None,
+        description=(
+            "Game-status designation as it stood before this player's own kickoff. "
+            "Null means no designation was published - not that he is healthy."
+        ),
+    )
+    availability_factor: float = Field(
+        default=1.0,
+        description=(
+            "Multiplier applied for that designation. 1.0 when none was published, "
+            "so an unadjusted projection is projected_points / availability_factor."
+        ),
+    )
     rank: int = Field(description="Rank within this response, 1 = highest projection.")
     position_rank: int = Field(description="Rank within the player's position, board-wide.")
 

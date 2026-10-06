@@ -200,6 +200,62 @@ real change to what "the board" means. Captures cannot be backfilled but the
 cutoff rule can be changed later, so the cadence captures Friday, Saturday and
 Sunday morning regardless.
 
+## 4b. Availability is read per game, not per week
+
+Everything else here uses one cutoff per week - its first kickoff - because a
+board is published once, before any of it has been played. For injuries that
+rule is not conservative, it is useless, and the archive proves it with a
+number: the last snapshot before 2026 week 4's Thursday kickoff contains ten
+week-4 rows and **not one game-status designation**. Teams file practice
+participation on Wednesday and designations on *Friday*, and Friday is after
+Thursday night.
+
+Measured against each player's **own** kickoff instead:
+
+| cutoff | designations available |
+|---|---|
+| Thursday 00:15Z (the week's first kickoff) | **0** |
+| Sunday 13:30Z | 70 Out, 58 Questionable, 2 Doubtful |
+| Sunday 20:05Z | 73 Out, 63 Questionable, 2 Doubtful |
+
+Friday's report is legitimately pre-kickoff information for a Sunday game, and
+using it leaks nothing about that player's outcome, which is still unknown. The
+counts rising across Sunday's windows is the archive behaving correctly: a later
+game gets a later snapshot.
+
+So the two questions are separated. **History stays per week** and therefore
+stays strictly conservative about *outcomes* - a Sunday projection still cannot
+see Thursday's results. **Availability reads per game**, because it is
+pre-kickoff information rather than an outcome. History is about what has
+happened; availability is about what was known.
+
+The source rule is enforced in code rather than remembered. For a player whose
+game has not started, the live upstream file is correct - it is what a publisher
+knows at publication time. At or after his kickoff, only the archive will do,
+because the live file has by then been overwritten with post-game state. That
+distinction is not cosmetic: *Out* does not merely correlate with scoring zero,
+it partly **is** the outcome, so reading the current file to "project" a played
+week would be near-perfect leakage. There is a test asserting the live feed is
+not even consulted for a week already played.
+
+A null designation means *no designation was published*, never *healthy*. The
+bundle records the counts it found, so a board built before midweek is
+distinguishable from one where nobody was hurt - and the page says which it is
+rather than leaving a reader to infer it from an absence of zeros.
+
+The factors themselves are a **stated prior, not a measurement**, because the
+obvious measurement is contaminated: computing `P(play | Questionable)` from the
+upstream file uses rows relabelled after the game, so players who were
+Questionable and then sat now read as Out, the surviving Questionable rows skew
+toward those who played, and any factor derived that way is an optimistic upper
+bound. The archive can measure this honestly over the weeks it covers, and will.
+
+Over 2015-2025 the adjustment is a **strict no-op**, because the archive does
+not reach back that far and an absent designation is a factor of 1.0. Verified
+on real data rather than asserted: across 2022-2024 the adjusted and unadjusted
+predictors agree on every metric to four decimal places. The adjustment can only
+act where there is point-in-time evidence that it should.
+
 ## 5. The target is computed, not inherited
 
 Fantasy points are recomputed from box-score components by `nflproj.scoring`

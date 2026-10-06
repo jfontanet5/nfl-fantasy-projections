@@ -17,15 +17,20 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
+import pandas as pd
+
+from nflproj.features.injuries import STATUS_COLUMN, availability_factor
 from nflproj.report import interpret as itp
 from nflproj.report.interpret import Confidence, Reading
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable, Mapping
     from pathlib import Path
 
     import pandas as pd
@@ -113,6 +118,48 @@ def _meter(group: itp.GroupReading) -> str:
         </div>"""
 
 
+def _status_badge(row: Mapping[Hashable, Any]) -> str:
+    """An OUT / D / Q chip beside a player's name.
+
+    The adjustment is shown, not applied silently. A top-60 player vanishing
+    from a board with no explanation is indistinguishable from a bug - worse
+    than ranking him, because it cannot be checked. The badge says what was
+    done, and `_unadjusted_note` says what the number was before.
+    """
+    status = row.get(STATUS_COLUMN)
+    if not isinstance(status, str) or not status.strip():
+        return ""
+    short = {"out": "OUT", "doubtful": "D", "questionable": "Q"}.get(
+        status.strip().lower(), status.strip()[:3].upper()
+    )
+    factor = availability_factor(status)
+    tone = "out" if factor == 0.0 else ("doubtful" if factor < _DOUBTFUL_TONE else "questionable")
+    return (
+        f'<span class="inj" data-inj="{_esc(tone)}" '
+        f'title="{_esc(status)} before this game\'s kickoff">{_esc(short)}</span>'
+    )
+
+
+def _unadjusted_note(row: Mapping[Hashable, Any]) -> str:
+    """What the projection was before the availability factor."""
+    status = row.get(STATUS_COLUMN)
+    if not isinstance(status, str) or not status.strip():
+        return ""
+    factor = availability_factor(status)
+    if factor == 1.0:
+        return ""
+    raw = float(row["prediction"]) / factor if factor else _raw_from(row)
+    if math.isnan(raw):  # nothing honest to show
+        return ""
+    return f' <span class="was">was {raw:.1f}</span>'
+
+
+def _raw_from(row: Mapping[Hashable, Any]) -> float:
+    """Unadjusted value when the factor is zero and division is impossible."""
+    value = row.get("prediction_unadjusted")
+    return float(value) if isinstance(value, (int, float)) else float("nan")
+
+
 def _board(projections: pd.DataFrame | None, calibration: float) -> str:
     if projections is None or projections.empty:
         return """
@@ -125,17 +172,32 @@ def _board(projections: pd.DataFrame | None, calibration: float) -> str:
         if subset.empty:
             continue
         limit = STARTER_TIERS.get(position, 12)
-        subset = subset.nlargest(limit, "prediction")
+        ranked = subset.nlargest(limit, "prediction")
+
+        # A zeroed player drops out of a top-N list entirely, which is the one
+        # outcome worth avoiding: silently deleting a startable name is
+        # indistinguishable from a bug, and unexplainable to a reader looking
+        # for him. So anyone who *would* have made this tier on the
+        # unadjusted number is kept, shown at 0.0 with his designation and what
+        # the number was.
+        if "prediction_unadjusted" in subset.columns:
+            would_start = subset.nlargest(limit, "prediction_unadjusted")
+            ruled_out = would_start[would_start["prediction"] <= 0.0]
+            if not ruled_out.empty:
+                ranked = pd.concat([ranked, ruled_out]).drop_duplicates(
+                    subset=["player_id"], keep="first"
+                )
+        subset = ranked.sort_values("prediction", ascending=False)
 
         rows = "\n".join(
             f"""            <tr>
-              <td class="rank">{rank}</td>
-              <td class="player">{_esc(r.player_display_name)}</td>
-              <td class="team">{_esc(r.team)}</td>
-              <td class="opp">{_esc(r.opponent_team)}</td>
-              <td class="pts">{r.prediction:.1f}</td>
+              <td class="rank">{rank if float(row["prediction"]) > 0 else "&mdash;"}</td>
+              <td class="player">{_esc(row["player_display_name"])}{_status_badge(row)}</td>
+              <td class="team">{_esc(row["team"])}</td>
+              <td class="opp">{_esc(row["opponent_team"])}</td>
+              <td class="pts">{float(row["prediction"]):.1f}{_unadjusted_note(row)}</td>
             </tr>"""
-            for rank, r in enumerate(subset.itertuples(index=False), start=1)
+            for rank, row in enumerate(subset.to_dict(orient="records"), start=1)
         )
 
         blocks.append(f"""
@@ -159,6 +221,25 @@ def _board(projections: pd.DataFrame | None, calibration: float) -> str:
         </div>
       </section>""")
 
+    designated = (
+        projections[STATUS_COLUMN].notna().sum() if STATUS_COLUMN in projections.columns else 0
+    )
+    if designated:
+        inj_note = (
+            '<p class="board-note">Projections are multiplied by availability: '
+            f"{int(designated)} players carried a game-status designation before their "
+            "own kickoff. <strong>OUT</strong> is scored 0.0 and the pre-adjustment "
+            "number is shown beside it.</p>"
+        )
+    else:
+        # Said out loud, because a board with no designations looks exactly like
+        # one where everybody is healthy, and the two are very different claims.
+        inj_note = (
+            '<p class="board-note">No injury designations were published for this '
+            "week yet, so these numbers are <em>not</em> availability-adjusted. "
+            "Designations are filed midweek; this board refreshes when they are.</p>"
+        )
+
     spread_note = ""
     if calibration < OVER_DISPERSION_THRESHOLD:
         spread_note = (
@@ -176,7 +257,7 @@ def _board(projections: pd.DataFrame | None, calibration: float) -> str:
         <span class="board-hint">Click a column heading to re-sort.</span>
       </div>"""
 
-    return controls + spread_note + "\n".join(blocks)
+    return controls + inj_note + spread_note + "\n".join(blocks)
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,6 +704,22 @@ _STYLE: Final = """
     color: var(--ink-2);
     white-space: nowrap;
   }
+  .inj {
+    display: inline-block;
+    margin-left: .45rem;
+    padding: 0 .3rem;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    font-size: .68em;
+    font-weight: 600;
+    letter-spacing: .04em;
+    vertical-align: .08em;
+  }
+  .inj[data-inj="out"] { color: var(--poor); }
+  .inj[data-inj="doubtful"] { color: var(--warn); }
+  .inj[data-inj="questionable"] { color: var(--warn); opacity: .85; }
+  .was { font-size: .74em; opacity: .6; white-space: nowrap; }
+
   .chip[data-confidence="strong"] { color: var(--good); border-color: var(--good); }
   .chip[data-confidence="moderate"] { color: var(--warn); border-color: var(--warn); }
   .chip[data-confidence="weak"] { color: var(--poor); border-color: var(--poor); }
@@ -755,6 +852,9 @@ _STYLE: Final = """
 #: Name of the meta tag carrying the scorecard timestamp the page was built
 #: from. Read by `nflproj page-health` to detect a page that has stopped
 #: being deployed - see render_document.
+#: Factor below which a designation is styled as the stronger warning.
+_DOUBTFUL_TONE: Final = 0.5
+
 GENERATED_AT_META: Final = "nflproj:generated-at"
 
 PAGE_TITLE: Final = "The Sunday Board"

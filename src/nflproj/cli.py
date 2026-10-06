@@ -23,6 +23,7 @@ from nflproj.features.calendar import (
     latest_completed_week,
     next_projectable_week,
 )
+from nflproj.features.injuries import status_summary
 from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, UniversePolicy, build_panel
 from nflproj.ingest import nflverse as nv
 from nflproj.ingest.archive import (
@@ -285,6 +286,9 @@ def publish(
         raw_assets={k: e.sha256 for k, e in sorted(manifest.entries().items())},
         metrics=_headline_metrics(settings.reports_dir / f"{scorecard}.json", predictor),
         baseline=HEADLINE_BASELINE_NAME,
+        # Recorded, not inferred. A board with no designations behind it looks
+        # identical to one where nobody was hurt, and the difference matters.
+        injuries=status_summary(projections),
     )
     typer.echo(
         f"bundle {metadata.version}  {metadata.predictor}  "

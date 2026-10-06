@@ -18,12 +18,16 @@ is the better estimator instead of us asserting it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import pandas as pd
 
+from nflproj.features.injuries import STATUS_COLUMN, availability_factors
 from nflproj.predictors.base import Predictor
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 #: Fallback used before any history exists at all (season opener weeks for a
 #: position that somehow has no prior rows). Deliberately not zero: a predictor
@@ -232,7 +236,24 @@ HEADLINE_BASELINE_NAME = "season_to_date_mean"
 #: against the baseline, rather than publishing the thing we are measured by.
 #: Promoted from `ewma_hl3` once the season discount beat it on both MAE and
 #: ranking in 10 of 11 seasons.
-PUBLISHED_PREDICTOR_NAME = "season_decayed_hl3_d0.5"
+#: Suffix marking a predictor whose output has been multiplied by an
+#: availability factor from the point-in-time injury report.
+AVAILABILITY_SUFFIX = "+avail"
+
+#: The predictor the page and the API publish. Availability-adjusted, because
+#: ranking a player the league has declared Out is publishing a number we know
+#: to be wrong - measured at 19 such players on the 2026 week-5 board, five of
+#: them inside the top 100.
+#:
+#: Over 2015-2025 this is bit-identical to the unadjusted predictor, because the
+#: archive does not reach back that far and an absent designation is a factor of
+#: 1.0. A test asserts that equality: the historical scorecard is unchanged, and
+#: the adjustment can only act where there is point-in-time evidence to act on.
+PUBLISHED_PREDICTOR_NAME = "season_decayed_hl3_d0.5" + AVAILABILITY_SUFFIX
+
+#: The same estimator without the availability adjustment, kept on the slate so
+#: the scorecard shows what the adjustment did and did not change.
+UNADJUSTED_PREDICTOR_NAME = "season_decayed_hl3_d0.5"
 
 
 def default_baselines() -> list[Predictor]:
@@ -246,6 +267,7 @@ def default_baselines() -> list[Predictor]:
         RollingMean(window=4),
         ExponentialMean(halflife=3.0),
         SeasonDecayedMean(),
+        AvailabilityAdjusted(SeasonDecayedMean()),
         AvailabilityWeighted(),
     ]
 
@@ -502,3 +524,57 @@ class SeasonDecayedMean:
             else pd.Series(np.nan, index=targets.index, dtype="float64")
         )
         return own.fillna(prior).astype("float64").rename("prediction")
+
+
+@dataclass
+class AvailabilityAdjusted:
+    """Any predictor, multiplied by what the injury report said before kickoff.
+
+    A wrapper rather than a new estimator, for two reasons. It composes - the
+    same object will wrap an XGBoost model without changing either of them -
+    and it keeps the adjustment separable, so the scorecard can show the
+    unadjusted and adjusted versions side by side and the contribution is
+    attributable rather than entangled.
+
+    The designation arrives on the target rows, put there by
+    :func:`nflproj.features.injuries.attach_status`, which is where the
+    archive-versus-live sourcing discipline lives. This class does arithmetic
+    and nothing else; it cannot reach for a feed and so cannot reach for the
+    wrong one.
+
+    A missing designation is a factor of 1.0. That is the common case - every
+    week before the archive began, and every board published before midweek -
+    and it means wrapping a predictor is safe where there is no evidence. It
+    also means the wrapper is a strict no-op on the 2015-2025 scorecard, which
+    is asserted rather than assumed.
+    """
+
+    inner: Predictor
+    #: Overridable so a sweep can calibrate the factors once the archive has
+    #: enough history to measure them honestly.
+    factors: Mapping[str, float] | None = None
+
+    @property
+    def name(self) -> str:
+        return f"{self.inner.name}{AVAILABILITY_SUFFIX}"
+
+    def fit(self, history: pd.DataFrame) -> None:
+        self.inner.fit(history)
+
+    def predict(self, targets: pd.DataFrame) -> pd.Series:
+        base = self.inner.predict(targets)
+        if STATUS_COLUMN not in targets.columns:
+            # A panel built without injuries, or a caller passing bare targets.
+            # Returning the unadjusted projection is right: we have no evidence,
+            # and inventing a penalty would be worse than declining to apply one.
+            return base
+        if self.factors is None:
+            factors = availability_factors(targets[STATUS_COLUMN])
+        else:
+            lookup = {k.lower(): v for k, v in self.factors.items()}
+            factors = (
+                targets[STATUS_COLUMN]
+                .map(lambda s: lookup.get(s.strip().lower(), 1.0) if isinstance(s, str) else 1.0)
+                .astype("float64")
+            )
+        return (base * factors).astype("float64")

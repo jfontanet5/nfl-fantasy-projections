@@ -1,0 +1,95 @@
+name: Midweek board refresh
+
+# Rebuilds and redeploys the board - not the scorecard - as injury
+# designations firm up during the week.
+#
+# Why this exists. The weekly job publishes on Tuesday, and on Tuesday the
+# week's injury report does not exist: teams file practice participation on
+# Wednesday and game-status designations on Friday. So Tuesday's board is
+# necessarily unadjusted, and says so on the page. Without this workflow the
+# availability adjustment would be dead code on the public board for every week
+# of the season.
+#
+# It deliberately does NOT re-run the backtest. The scorecard is a record of
+# weeks already played and cannot change midweek; recomputing it three times a
+# week would burn ten minutes a run to produce the same file. This job reads
+# the committed scorecard and rebuilds only the upcoming board.
+#
+# Each refresh is a new content-hashed bundle with the same `valid_from` and a
+# later `created_at`, so the history of what was claimed - and when - stays
+# auditable rather than being overwritten.
+
+on:
+  schedule:
+    # UTC, with the same four-hour delay budget as the snapshotter, and :07
+    # rather than :00 because the top of the hour is the most congested slot.
+    - cron: "7 20 * * 5" # Fri - after final game-status designations
+    - cron: "7 15 * * 6" # Sat
+    - cron: "7 11 * * 0" # Sun - before the 1pm ET window
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: board-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      # Current season only. The board needs this season's stats and the
+      # injury report; the scorecard it reads is already committed.
+      - name: refresh the current season
+        run: uv run nflproj ingest --seasons 2026 --force
+
+      - name: rebuild the board
+        run: |
+          uv run nflproj report
+          uv run nflproj publish
+
+      - name: commit the refreshed board
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --staged --quiet; then
+            echo "board unchanged; no new designations since the last refresh"
+            exit 0
+          fi
+          git commit -m "chore(board): midweek refresh $(date -u +'%Y-%m-%dT%H:%MZ')"
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push; then
+              exit 0
+            fi
+            echo "push attempt $attempt lost a race; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "could not push the refreshed board after 3 attempts"
+          exit 1
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: reports/
+
+  deploy:
+    needs: refresh
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -7,6 +7,8 @@ import pytest
 
 from nflproj.predictors.baselines import (
     PUBLISHED_PREDICTOR_NAME,
+    UNADJUSTED_PREDICTOR_NAME,
+    AvailabilityAdjusted,
     AvailabilityWeighted,
     ExponentialMean,
     LastGame,
@@ -366,3 +368,126 @@ def test_decay_appears_in_the_name():
 def test_the_published_predictor_is_in_the_slate():
     """The page publishes a predictor the scorecard also scores."""
     assert PUBLISHED_PREDICTOR_NAME in {p.name for p in default_baselines()}
+
+
+# ------------------------------------------------- availability adjustment
+
+
+@pytest.fixture
+def adjust_targets() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "season": [2026] * 4,
+            "week": [4] * 4,
+            "player_id": ["healthy", "out", "doubtful", "questionable"],
+            "position": ["WR"] * 4,
+            "report_status": [None, "Out", "Doubtful", "Questionable"],
+        }
+    )
+
+
+@pytest.fixture
+def adjust_history() -> pd.DataFrame:
+    rows = []
+    for pid in ("healthy", "out", "doubtful", "questionable"):
+        for week in (1, 2, 3):
+            rows.append(
+                {
+                    "season": 2026,
+                    "week": week,
+                    "player_id": pid,
+                    "position": "WR",
+                    "fantasy_points": 10.0,
+                    "played": True,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_an_out_player_projects_exactly_zero(adjust_history, adjust_targets):
+    """The defect this exists for: Justin Jefferson ranked 58 at 12.3 while Out."""
+    pred = AvailabilityAdjusted(SeasonDecayedMean())
+    pred.fit(adjust_history)
+    out = pred.predict(adjust_targets)
+    assert out.iloc[1] == 0.0
+
+
+def test_the_adjustment_is_monotone_in_severity(adjust_history, adjust_targets):
+    pred = AvailabilityAdjusted(SeasonDecayedMean())
+    pred.fit(adjust_history)
+    out = pred.predict(adjust_targets)
+    healthy, gone, doubtful, questionable = out.tolist()
+    assert gone < doubtful < questionable < healthy
+
+
+def test_an_undesignated_player_is_untouched(adjust_history, adjust_targets):
+    """Wrapping must be free where there is no evidence to act on."""
+    inner = SeasonDecayedMean()
+    wrapped = AvailabilityAdjusted(SeasonDecayedMean())
+    inner.fit(adjust_history)
+    wrapped.fit(adjust_history)
+    assert wrapped.predict(adjust_targets).iloc[0] == pytest.approx(
+        inner.predict(adjust_targets).iloc[0]
+    )
+
+
+def test_the_wrapper_is_a_no_op_without_the_status_column(adjust_history, adjust_targets):
+    """Over 2015-2025 the archive reaches nothing, so the published scorecard
+    must be bit-identical to the unadjusted one. The adjustment can only ever
+    act where there is point-in-time evidence that it should.
+    """
+    bare = adjust_targets.drop(columns=["report_status"])
+    inner = SeasonDecayedMean()
+    wrapped = AvailabilityAdjusted(SeasonDecayedMean())
+    inner.fit(adjust_history)
+    wrapped.fit(adjust_history)
+    pd.testing.assert_series_equal(wrapped.predict(bare), inner.predict(bare), check_names=False)
+
+
+def test_all_null_designations_are_also_a_no_op(adjust_history, adjust_targets):
+    """The Tuesday case: the column exists, no report has been published."""
+    blank = adjust_targets.assign(report_status=None)
+    inner = SeasonDecayedMean()
+    wrapped = AvailabilityAdjusted(SeasonDecayedMean())
+    inner.fit(adjust_history)
+    wrapped.fit(adjust_history)
+    pd.testing.assert_series_equal(wrapped.predict(blank), inner.predict(blank), check_names=False)
+
+
+def test_the_name_marks_the_adjustment():
+    pred = AvailabilityAdjusted(SeasonDecayedMean())
+    assert pred.name == "season_decayed_hl3_d0.5+avail"
+    assert pred.name == PUBLISHED_PREDICTOR_NAME
+
+
+def test_the_published_predictor_is_the_adjusted_one():
+    """The page and the API publish availability-adjusted numbers."""
+    names = {p.name for p in default_baselines()}
+    assert PUBLISHED_PREDICTOR_NAME in names
+    assert UNADJUSTED_PREDICTOR_NAME in names, "keep both, so the delta is attributable"
+
+
+def test_the_index_is_preserved(adjust_history, adjust_targets):
+    shuffled = adjust_targets.sample(frac=1.0, random_state=3)
+    pred = AvailabilityAdjusted(SeasonDecayedMean())
+    pred.fit(adjust_history)
+    assert pred.predict(shuffled).index.equals(shuffled.index)
+
+
+def test_custom_factors_override_the_prior(adjust_history, adjust_targets):
+    """The factors are a stated prior; a sweep must be able to replace them."""
+    pred = AvailabilityAdjusted(SeasonDecayedMean(), factors={"questionable": 0.5})
+    pred.fit(adjust_history)
+    out = pred.predict(adjust_targets)
+    # Only questionable is remapped; Out falls back to 1.0 under these factors.
+    assert out.iloc[3] == pytest.approx(out.iloc[0] * 0.5)
+
+
+def test_the_wrapper_composes_with_any_predictor(adjust_history, adjust_targets):
+    """It will wrap XGBoost unchanged; that is the point of a wrapper."""
+    for inner in (SeasonToDateMean(), ExponentialMean(halflife=3.0), PositionMean()):
+        pred = AvailabilityAdjusted(inner)
+        pred.fit(adjust_history)
+        out = pred.predict(adjust_targets)
+        assert out.iloc[1] == 0.0, f"{inner.name} not zeroed when Out"
+        assert out.notna().all()

@@ -30,6 +30,7 @@ forward would be a leakage-adjacent fudge, so v1 declines to project it.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final, assert_never
 
@@ -37,6 +38,7 @@ import pandas as pd
 
 from nflproj.config import FANTASY_POSITIONS, Settings, get_settings
 from nflproj.features.calendar import build_team_calendar
+from nflproj.features.injuries import attach_status
 from nflproj.ingest import nflverse as nv
 from nflproj.logging import get_logger
 from nflproj.scoring import PPR, REQUIRED_STAT_COLUMNS, ScoringRules, compute_fantasy_points
@@ -209,13 +211,26 @@ def build_panel(
     scoring: ScoringRules = PPR,
     lookback_games: int = DEFAULT_LOOKBACK_GAMES,
     settings: Settings | None = None,
+    injuries: bool = True,
+    allow_live_injuries: bool = True,
+    now: datetime | None = None,
 ) -> pd.DataFrame:
     """Build the full player-week panel for ``seasons``.
+
+    Args:
+        injuries: Join the point-in-time game-status designations. On by
+            default: a panel without them cannot express availability, and
+            that was the system's largest visible defect.
+        allow_live_injuries: Permit the live upstream feed for weeks that have
+            not kicked off. Set False to force archive-only sourcing, which is
+            what a reproducible backtest wants.
+        now: Clock, injected for tests.
 
     Returns:
         One row per player-week in the ``ACTIVE_RECENT`` universe, carrying the
         realised target (``fantasy_points``, 0.0 when the player did not play),
-        a ``played`` flag, and the pre-kickoff game context from the schedule.
+        a ``played`` flag, the pre-kickoff game context from the schedule, and -
+        when ``injuries`` is set - the designation published before kickoff.
     """
     seasons = sorted(set(seasons))
     settings = settings or get_settings()
@@ -264,6 +279,19 @@ def build_panel(
 
     #: Safe to evaluate against: we claim to project it, and the games are done.
     panel["scorable"] = panel["projectable"] & panel["week_complete"]
+
+    if injuries:
+        # Pre-kickoff information, so it is deliberately NOT in OUTCOME_COLUMNS
+        # and does reach predictors through targets. Sourcing is what keeps it
+        # honest: the archive for anything already played, the live feed only
+        # for a week still ahead. See nflproj.features.injuries.
+        panel = attach_status(
+            panel,
+            calendar=calendar,
+            settings=settings,
+            allow_live=allow_live_injuries,
+            now=now,
+        )
 
     panel = panel.sort_values(PANEL_KEY, kind="mergesort").reset_index(drop=True)
 

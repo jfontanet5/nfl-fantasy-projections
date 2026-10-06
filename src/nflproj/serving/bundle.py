@@ -97,6 +97,13 @@ class BundleMetadata:
     #: Headline metrics for this predictor, as measured by the scorecard.
     metrics: dict[str, float] = field(default_factory=dict)
     baseline: str | None = None
+    #: Counts by game-status designation behind this board, e.g.
+    #: ``{"out": 17, "questionable": 40}``. An **empty** dict means no
+    #: designations were available - the normal case for a board published
+    #: before midweek, and for every week predating the archive. It must not be
+    #: read as "nobody was hurt", which is why it is recorded rather than
+    #: inferred from the absence of zeros.
+    injuries: dict[str, int] = field(default_factory=dict)
     #: Excluded from the version hash on purpose: a rebuild is the same model.
     created_at: str = ""
 
@@ -161,6 +168,7 @@ def write_bundle(
     raw_assets: dict[str, str] | None = None,
     metrics: dict[str, float] | None = None,
     baseline: str | None = None,
+    injuries: dict[str, int] | None = None,
     now: datetime | None = None,
 ) -> BundleMetadata:
     """Write a bundle, deriving its version from its contents."""
@@ -183,6 +191,7 @@ def write_bundle(
         "raw_assets": dict(sorted((raw_assets or {}).items())),
         "metrics": {k: round(float(v), 6) for k, v in sorted((metrics or {}).items())},
         "baseline": baseline,
+        "injuries": dict(sorted((injuries or {}).items())),
     }
     metadata = BundleMetadata(
         version=compute_version(projections, claims),

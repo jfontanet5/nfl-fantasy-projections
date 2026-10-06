@@ -22,7 +22,8 @@ is `active_recent`; the named baseline is `season_to_date_mean`.
 
 | predictor | MAE | Spearman | top-N hit | calib. slope | MAE skill |
 |---|---:|---:|---:|---:|---:|
-| `season_decayed_hl3_d0.5` *(published)* | **4.398** | **0.600** | 0.521 | 0.832 | **+4.2%** |
+| `season_decayed_hl3_d0.5+avail` *(published)* | **4.398** | **0.600** | 0.521 | 0.832 | **+4.2%** |
+| `season_decayed_hl3_d0.5` | **4.398** | **0.600** | 0.521 | 0.832 | **+4.2%** |
 | `ewma_hl3` | 4.417 | 0.596 | 0.522 | 0.846 | +3.8% |
 | `availability_weighted_hl3_w4_p1` | 4.460 | 0.586 | 0.520 | 0.874 | +2.9% |
 | `rolling_mean_4` | 4.541 | 0.572 | 0.503 | 0.744 | +1.1% |

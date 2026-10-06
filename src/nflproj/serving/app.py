@@ -49,6 +49,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, s
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
+from nflproj.features.injuries import STATUS_COLUMN, availability_factor
 from nflproj.logging import configure_logging, get_logger
 from nflproj.predictors.baselines import PUBLISHED_PREDICTOR_NAME, default_baselines
 from nflproj.serving.bundle import Bundle, BundleError, load_bundle
@@ -165,12 +166,15 @@ def _provenance(bundle: Bundle) -> Provenance:
         superseded=meta.superseded(),
         raw_asset_hashes=meta.raw_assets,
         metrics=meta.metrics,
+        injuries=meta.injuries,
     )
 
 
 def _to_projections(frame: pd.DataFrame) -> Iterator[Projection]:
     for row in frame.to_dict(orient="records"):
         opponent = row.get("opponent_team")
+        status = row.get(STATUS_COLUMN)
+        status = None if status is None or pd.isna(status) else str(status)
         yield Projection(
             player_id=str(row["player_id"]),
             player_name=str(row["player_display_name"]),
@@ -182,6 +186,8 @@ def _to_projections(frame: pd.DataFrame) -> Iterator[Projection]:
             projected_points=round(float(row["prediction"]), 2),
             rank=int(row["rank"]),
             position_rank=int(row["position_rank"]),
+            injury_status=status,
+            availability_factor=availability_factor(status),
         )
 
 

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from nflproj.features.injuries import PRACTICE_COLUMN, STATUS_COLUMN
 from nflproj.features.panel import FIRST_PROJECTABLE_WEEK, PANEL_KEY
 from nflproj.logging import get_logger
 from nflproj.predictors.base import Predictor, strip_outcomes
@@ -190,11 +191,27 @@ def project_week(
         raise ValueError(msg)
 
     predictor.fit(history)
-    preds = predictor.predict(strip_outcomes(targets))
+    blinded = strip_outcomes(targets)
+    preds = predictor.predict(blinded)
 
-    out = targets[[*PANEL_KEY, "player_display_name", "position", "team", "opponent_team"]].copy()
+    keep = [*PANEL_KEY, "player_display_name", "position", "team", "opponent_team"]
+    # Pre-kickoff context the published board needs in order to explain itself.
+    # Without the designation travelling alongside the number, a zeroed player
+    # is unexplainable on the page: the projection would be adjusted and the
+    # reason would have been dropped one function earlier.
+    keep += [c for c in (STATUS_COLUMN, PRACTICE_COLUMN) if c in targets.columns]
+
+    out = targets[keep].copy()
     out["predictor"] = predictor.name
     out["prediction"] = preds.to_numpy(dtype="float64")
+
+    # When the predictor wraps another, publish what the inner one said too, so
+    # the board can show "was 12.3" beside a 0.0. Division cannot recover it
+    # when the factor is zero, which is exactly the case worth showing.
+    inner = getattr(predictor, "inner", None)
+    if inner is not None:
+        out["prediction_unadjusted"] = inner.predict(blinded).to_numpy(dtype="float64")
+
     return out.sort_values("prediction", ascending=False).reset_index(drop=True)
 
 

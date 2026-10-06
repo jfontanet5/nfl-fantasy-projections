@@ -389,3 +389,88 @@ def test_the_error_names_the_likely_mistake(monkeypatch):
     monkeypatch.setattr(rh, "CHART_LIB_SRI", "A" * 86 + "==")
     with pytest.raises(ValueError, match="missing the 'sha512-' prefix"):
         rh._chart_lib_tag()
+
+
+# ------------------------------------------------- availability on the board
+
+
+@pytest.fixture
+def board_with_designations() -> pd.DataFrame:
+    """A WR tier where one startable name has been ruled out."""
+    rows = [
+        ("w1", "Able Receiver", 18.0, None, 18.0),
+        ("w2", "Baker Receiver", 15.0, None, 15.0),
+        ("w3", "Hurt Receiver", 0.0, "Out", 14.2),
+        ("w4", "Iffy Receiver", 9.9, "Questionable", 11.0),
+        ("w5", "Deep Receiver", 4.0, None, 4.0),
+    ]
+    return pd.DataFrame(
+        [
+            {
+                "player_id": pid,
+                "player_display_name": name,
+                "position": "WR",
+                "team": "ATL",
+                "opponent_team": "BAL",
+                "season": 2026,
+                "week": 4,
+                "prediction": pred,
+                "report_status": status,
+                "prediction_unadjusted": raw,
+            }
+            for pid, name, pred, status, raw in rows
+        ]
+    )
+
+
+def test_an_out_player_stays_on_the_board_with_a_badge(board_with_designations):
+    """Chosen over removing him: a top-60 name vanishing with no explanation is
+    indistinguishable from a bug, and cannot be checked by a reader."""
+    html = rh._board(board_with_designations, calibration=1.0)
+    assert "Hurt Receiver" in html
+    assert 'data-inj="out"' in html
+    assert ">OUT<" in html
+
+
+def test_the_pre_adjustment_number_is_shown(board_with_designations):
+    """Zeroing a player without saying what he was worth hides the cost."""
+    html = rh._board(board_with_designations, calibration=1.0)
+    assert "was 14.2" in html
+
+
+def test_a_zeroed_player_gets_no_rank_number(board_with_designations):
+    """He is not the 3rd best WR; he is not playing."""
+    html = rh._board(board_with_designations, calibration=1.0)
+    hurt = html[html.index("Hurt Receiver") - 220 : html.index("Hurt Receiver")]
+    assert "&mdash;" in hurt
+
+
+def test_a_questionable_player_is_badged_but_still_ranked(board_with_designations):
+    html = rh._board(board_with_designations, calibration=1.0)
+    assert 'data-inj="questionable"' in html
+    assert ">Q<" in html
+
+
+def test_the_board_says_how_many_designations_it_applied(board_with_designations):
+    html = rh._board(board_with_designations, calibration=1.0)
+    assert "2 players carried a game-status designation" in html
+
+
+def test_a_board_with_no_designations_says_so_rather_than_implying_health(
+    board_with_designations,
+):
+    """The Tuesday case. An unadjusted board and a board where nobody is hurt
+    look identical, and they are very different claims."""
+    clean = board_with_designations.assign(report_status=None)
+    html = rh._board(clean, calibration=1.0)
+    assert "No injury designations were published" in html
+    assert "not</em> availability-adjusted" in html
+    assert "data-inj=" not in html.split("<style")[0] or "OUT" not in html
+
+
+def test_a_board_without_the_status_column_still_renders(board_with_designations):
+    """Older bundles, and any caller passing a bare projections frame."""
+    bare = board_with_designations.drop(columns=["report_status", "prediction_unadjusted"])
+    html = rh._board(bare, calibration=1.0)
+    assert "Able Receiver" in html
+    assert "No injury designations were published" in html
