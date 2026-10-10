@@ -16,7 +16,7 @@ import typer
 
 from nflproj.config import get_settings
 from nflproj.evaluation.backtest import BacktestConfig, project_week, run_backtest
-from nflproj.evaluation.scorecard import build_scorecard
+from nflproj.evaluation.scorecard import build_scorecard, scorecard_predictors
 from nflproj.features.calendar import (
     build_team_calendar,
     current_season,
@@ -362,6 +362,44 @@ def snapshot(
         f"{observation.asset} {observation.season}: {observation.rows} rows, "
         f"sha256 {observation.sha256[:12]} ({state})"
     )
+
+
+@app.command(name="scorecard-health")
+def scorecard_health(
+    predictor: Annotated[
+        str, typer.Option(help="Predictor the page will publish.")
+    ] = PUBLISHED_PREDICTOR_NAME,
+    scorecard: Annotated[str, typer.Option(help="Scorecard stem under reports/.")] = "scorecard",
+) -> None:
+    """Check the committed scorecard can report on the published predictor.
+
+    The page publishes one predictor's board alongside that predictor's measured
+    track record, so the scorecard has to know the name. Renaming the published
+    predictor breaks that until a backtest reruns.
+
+    That is a deployment ordering requirement, and leaving it implicit stranded
+    the midweek refresh job for four days: it reads the committed scorecard and
+    deliberately does not rebuild it, so it could never regenerate what it
+    needed. Exits non-zero so a caller can run the backtest once and carry on
+    rather than failing.
+    """
+    settings = get_settings()
+    path = settings.reports_dir / f"{scorecard}.json"
+    try:
+        known = scorecard_predictors(path)
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"scorecard unusable: {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if predictor in known:
+        typer.echo(f"{path} reports on {predictor!r}")
+        return
+
+    typer.echo(f"{path} does NOT report on {predictor!r}")
+    typer.echo(f"  it describes: {', '.join(known)}")
+    typer.echo("  remedy: uv run nflproj backtest")
+    log.error("scorecard.predictor_missing", predictor=predictor, known=known)
+    raise typer.Exit(code=1)
 
 
 @app.command(name="page-health")

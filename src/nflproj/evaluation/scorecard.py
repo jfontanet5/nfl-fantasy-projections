@@ -229,3 +229,34 @@ def build_scorecard(
         slices=slices,
         provenance=provenance or {},
     )
+
+
+def scorecard_predictors(path: Path, *, slice_name: str = "overall") -> list[str]:
+    """Predictor names a written scorecard reports on.
+
+    Raises rather than returning an empty list when the file is missing or
+    unreadable: "no predictors" and "no scorecard" need different responses,
+    and conflating them is how a missing file reads as a passing check.
+    """
+    if not path.exists():
+        msg = f"no scorecard at {path}"
+        raise FileNotFoundError(msg)
+    try:
+        payload = json.loads(path.read_text())
+        rows = payload["slices"][slice_name]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        msg = f"scorecard at {path} is not readable: {exc}"
+        raise ValueError(msg) from exc
+    return sorted({str(row["predictor"]) for row in rows})
+
+
+def scorecard_covers(path: Path, predictor: str, *, slice_name: str = "overall") -> bool:
+    """Whether a written scorecard can report on ``predictor``.
+
+    The invariant behind the public page: it publishes one predictor's board and
+    that predictor's measured track record, so the committed scorecard has to
+    know the name. Renaming the published predictor breaks it until a backtest
+    reruns - which is a deployment ordering requirement, and leaving it implicit
+    stranded the midweek refresh job for four days.
+    """
+    return predictor in scorecard_predictors(path, slice_name=slice_name)

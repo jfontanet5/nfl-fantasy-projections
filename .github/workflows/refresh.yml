@@ -55,6 +55,19 @@ jobs:
       - name: refresh the current season
         run: uv run nflproj ingest --seasons 2026 --force
 
+      # Self-healing, and it exists because of a real four-day outage. This job
+      # reads the committed scorecard and deliberately does not rebuild it, so
+      # when the published predictor was renamed it could never regenerate the
+      # scorecard it needed - and `report` correctly refused a scorecard that
+      # did not know the name. The ordering requirement was implicit; now it is
+      # checked, and satisfied here rather than waiting for Tuesday.
+      - name: the scorecard knows the published predictor
+        run: |
+          if ! uv run nflproj scorecard-health; then
+            echo "::notice::scorecard predates the published predictor; backtesting once"
+            uv run nflproj backtest --seasons 2015-2026
+          fi
+
       - name: rebuild the board
         run: |
           uv run nflproj report

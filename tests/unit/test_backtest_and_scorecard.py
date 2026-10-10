@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from nflproj.evaluation.backtest import BacktestConfig, project_week, run_backtest
-from nflproj.evaluation.scorecard import SCORECARD_SCHEMA_VERSION, build_scorecard
+from nflproj.evaluation.scorecard import (
+    SCORECARD_SCHEMA_VERSION,
+    build_scorecard,
+    scorecard_covers,
+    scorecard_predictors,
+)
 from nflproj.features.panel import UniversePolicy
 from nflproj.predictors.baselines import (
     HEADLINE_BASELINE_NAME,
+    PUBLISHED_PREDICTOR_NAME,
     PositionMean,
     SeasonToDateMean,
     default_baselines,
@@ -303,3 +310,77 @@ def test_unplayed_weeks_stay_out_of_history_but_week_one_does_not(synthetic_pane
     assert (2021, 8) not in recorder.weeks_seen
     # The prior season's weeks 7-8 are settled and must still be learned from.
     assert (2020, 7) in recorder.weeks_seen
+
+
+# ------------------------------------------- the published-predictor invariant
+
+
+def _written_scorecard(tmp_path: Path, predictors: list[str]) -> Path:
+    """A scorecard file naming exactly these predictors."""
+    path = tmp_path / "scorecard.json"
+    path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-10-06T20:44:10+00:00",
+                "slices": {
+                    "overall": [{"predictor": p, "mae": 4.4} for p in predictors],
+                    "by_week": [{"predictor": p, "week": 2, "mae": 4.4} for p in predictors],
+                },
+            }
+        )
+    )
+    return path
+
+
+def test_a_scorecard_reports_its_predictors(tmp_path):
+    path = _written_scorecard(tmp_path, ["b", "a"])
+    assert scorecard_predictors(path) == ["a", "b"]
+
+
+def test_coverage_is_true_for_a_predictor_the_scorecard_knows(tmp_path):
+    path = _written_scorecard(tmp_path, ["season_decayed_hl3_d0.5+avail", "ewma_hl3"])
+    assert scorecard_covers(path, "season_decayed_hl3_d0.5+avail") is True
+
+
+def test_coverage_is_false_after_the_published_predictor_is_renamed(tmp_path):
+    """The real outage, reduced to one assertion.
+
+    A scorecard written before a rename describes the old name. The page
+    publishes the new one, and cannot report a track record that does not
+    mention it - so the refresh job failed for four days while every other
+    check stayed green.
+    """
+    path = _written_scorecard(tmp_path, ["season_decayed_hl3_d0.5"])
+    assert scorecard_covers(path, "season_decayed_hl3_d0.5+avail") is False
+
+
+def test_a_missing_scorecard_raises_rather_than_reading_as_uncovered(tmp_path):
+    """ "No scorecard" and "no such predictor" need different responses."""
+    with pytest.raises(FileNotFoundError, match="no scorecard"):
+        scorecard_predictors(tmp_path / "absent.json")
+
+
+def test_an_unreadable_scorecard_raises(tmp_path):
+    path = tmp_path / "scorecard.json"
+    path.write_text("{ truncated")
+    with pytest.raises(ValueError, match="not readable"):
+        scorecard_predictors(path)
+
+
+def test_a_scorecard_without_the_slice_raises(tmp_path):
+    path = tmp_path / "scorecard.json"
+    path.write_text(json.dumps({"slices": {"by_week": []}}))
+    with pytest.raises(ValueError, match="not readable"):
+        scorecard_predictors(path)
+
+
+def test_the_published_predictor_is_covered_by_a_freshly_built_scorecard(synthetic_panel):
+    """The invariant holds by construction when the scorecard is current.
+
+    This is the property the workflow now enforces: a scorecard built from the
+    current slate always knows the name the page publishes.
+    """
+    predictions = run_backtest(synthetic_panel, default_baselines())
+    card = build_scorecard(predictions, universe=UniversePolicy.ACTIVE_RECENT)
+    names = {row["predictor"] for row in card.slices["overall"].to_dict(orient="records")}
+    assert PUBLISHED_PREDICTOR_NAME in names

@@ -74,7 +74,17 @@ def _row_for(scorecard: dict[str, Any], slice_name: str, predictor: str) -> dict
     for row in rows:
         if row["predictor"] == predictor:
             return dict(row)
-    msg = f"predictor {predictor!r} not present in the {slice_name!r} slice"
+    # Names the remedy, because the realistic cause is a deployment ordering
+    # problem rather than a typo: renaming the published predictor leaves every
+    # committed scorecard describing the old name until a backtest reruns. That
+    # stranded the midweek refresh job for four days.
+    available = sorted({str(row["predictor"]) for row in rows})
+    msg = (
+        f"predictor {predictor!r} not present in the {slice_name!r} slice. "
+        f"The scorecard describes {available}. If the published predictor was "
+        "renamed, regenerate it with `nflproj backtest` - a scorecard cannot "
+        "report on a predictor that did not exist when it was written."
+    )
     raise KeyError(msg)
 
 
