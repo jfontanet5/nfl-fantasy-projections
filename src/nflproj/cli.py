@@ -10,8 +10,9 @@ import json
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
+import pandas as pd
 import typer
 
 from nflproj.config import get_settings
@@ -55,6 +56,14 @@ log = get_logger(__name__)
 
 SeasonRange = Annotated[str, typer.Option(help="Season range, e.g. '2015-2024' or '2024'.")]
 
+AllowNoWeek = Annotated[
+    bool,
+    typer.Option(
+        "--allow-no-week",
+        help="Outside the season, exit 0 instead of failing. For scheduled jobs.",
+    ),
+]
+
 
 def _parse_seasons(spec: str) -> list[int]:
     if "-" in spec:
@@ -82,6 +91,65 @@ def ingest(
     nv.fetch_asset(nv.SCHEDULES, None, settings=settings, manifest=manifest, force=force)
     nv.fetch_seasons(nv.PLAYER_STATS, years, settings=settings, manifest=manifest, force=force)
     log.info("ingest.done", assets=len(manifest), raw_dir=str(settings.raw_dir))
+
+
+class Target(NamedTuple):
+    """The week a publishing command covers, and the schedule it came from."""
+
+    season: int
+    week: int
+    calendar: pd.DataFrame
+
+
+def _resolve_target(
+    season: int | None,
+    week: int | None,
+    *,
+    allow_no_week: bool,
+    command: str,
+) -> Target | None:
+    """Pin down the (season, week) a publishing command covers.
+
+    Returns ``None`` when there is nothing to publish and the caller said that
+    is acceptable, in which case the command should exit 0 having done nothing.
+
+    ``--allow-no-week`` exists for the scheduled jobs. Between the last game of
+    a season and the following September there is no upcoming week, and
+    `next_projectable_week` correctly returns None - so without this the weekly
+    and midweek workflows would fail on every run for seven months. Roughly 120
+    red runs that all mean "it is February" is the cries-wolf failure this repo
+    keeps working to avoid, and it is worse than useless: it teaches us to stop
+    reading the one signal that is supposed to mean something.
+
+    It is scoped to exactly that condition. A season that never started, an
+    unreadable schedule, a failed ingest and an out-of-scope week all still
+    raise, because each of those is actionable and none of them looks like the
+    off-season.
+    """
+    settings = get_settings()
+    calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
+    if season is not None and week is not None:
+        resolved_season, resolved_week = season, week
+    else:
+        found = season if season is not None else current_season(calendar)
+        if found is None:
+            msg = "no season has started yet; pass one explicitly"
+            raise typer.BadParameter(msg)
+        upcoming = week if week is not None else next_projectable_week(calendar, found)
+        if upcoming is None:
+            if allow_no_week:
+                typer.echo(f"no upcoming week in {found}; nothing to {command}")
+                log.info("target.no_upcoming_week", season=found, command=command)
+                return None
+            msg = f"no upcoming week in {found}; pass --week explicitly"
+            raise typer.BadParameter(msg)
+        resolved_season, resolved_week = found, upcoming
+        log.info("target.derived", season=resolved_season, week=resolved_week, command=command)
+
+    if resolved_week < FIRST_PROJECTABLE_WEEK:
+        msg = f"week must be >= {FIRST_PROJECTABLE_WEEK}; week 1 is out of scope"
+        raise typer.BadParameter(msg)
+    return Target(resolved_season, resolved_week, calendar)
 
 
 @app.command()
@@ -162,6 +230,8 @@ def report(
         str, typer.Option(help="Scorecard stem under reports/ to read metrics from.")
     ] = "scorecard",
     out: Annotated[str, typer.Option(help="Output filename under reports/.")] = "index.html",
+    *,
+    allow_no_week: AllowNoWeek = False,
 ) -> None:
     """Render the public report page: this week's board plus the track record."""
     chosen = next((p for p in default_baselines() if p.name == predictor), None)
@@ -172,21 +242,10 @@ def report(
     settings = get_settings()
     settings.ensure_dirs()
 
-    if season is None or week is None:
-        calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
-        season = season if season is not None else current_season(calendar)
-        if season is None:
-            msg = "no season has started yet; pass one explicitly"
-            raise typer.BadParameter(msg)
-        week = week if week is not None else next_projectable_week(calendar, season)
-        if week is None:
-            msg = f"no upcoming week in {season}; pass --week explicitly"
-            raise typer.BadParameter(msg)
-        log.info("report.derived_target", season=season, week=week)
-
-    if week < FIRST_PROJECTABLE_WEEK:
-        msg = f"week must be >= {FIRST_PROJECTABLE_WEEK}; week 1 is out of scope"
-        raise typer.BadParameter(msg)
+    target = _resolve_target(season, week, allow_no_week=allow_no_week, command="report")
+    if target is None:
+        return
+    season, week = target.season, target.week
 
     scorecard_path = settings.reports_dir / f"{scorecard}.json"
     if not scorecard_path.exists():
@@ -235,6 +294,8 @@ def publish(
         str, typer.Option(help="Scorecard stem under reports/ to read the track record from.")
     ] = "scorecard",
     out: Annotated[str, typer.Option(help="Directory to write the bundle into.")] = "bundle",
+    *,
+    allow_no_week: AllowNoWeek = False,
 ) -> None:
     """Write a versioned projection bundle for the serving layer to load.
 
@@ -255,19 +316,11 @@ def publish(
 
     settings = get_settings()
     settings.ensure_dirs()
-    calendar = build_team_calendar(range(settings.first_season, 2030), settings=settings)
 
-    season = season if season is not None else current_season(calendar)
-    if season is None:
-        msg = "no season has started yet; pass one explicitly"
-        raise typer.BadParameter(msg)
-    week = week if week is not None else next_projectable_week(calendar, season)
-    if week is None:
-        msg = f"no upcoming week in {season}; pass --week explicitly"
-        raise typer.BadParameter(msg)
-    if week < FIRST_PROJECTABLE_WEEK:
-        msg = f"week must be >= {FIRST_PROJECTABLE_WEEK}; week 1 is out of scope"
-        raise typer.BadParameter(msg)
+    target = _resolve_target(season, week, allow_no_week=allow_no_week, command="publish")
+    if target is None:
+        return
+    season, week, calendar = target
 
     panel = build_panel(range(season - 1, season + 1), settings=settings)
     projections = project_week(panel, chosen, season=season, week=week)
@@ -408,6 +461,7 @@ def page_health(
     max_age_days: Annotated[
         float, typer.Option(help="How stale the deployed page may be.")
     ] = DEFAULT_MAX_AGE.total_seconds() / 86400.0,
+    allow_no_week: AllowNoWeek = False,
 ) -> None:
     """Check that the public page is still being deployed.
 
@@ -433,6 +487,21 @@ def page_health(
     typer.echo(f"  age {health.age_days:.1f} days (bound {max_age_days:g})")
 
     if health.stale(max_age=timedelta(days=max_age_days)):
+        # The age bound only means something while there are weeks to publish.
+        # Off-season the page is correctly frozen at the last played week, so
+        # this check would go red every Tuesday from February to September -
+        # and it would be measuring the calendar, not the deploy.
+        #
+        # The fetch and the marker are still required either way: a 404, a dead
+        # Pages site or a page with no provenance marker is a real failure in
+        # any month, and that has already been established above.
+        if (
+            allow_no_week
+            and _resolve_target(None, None, allow_no_week=True, command="judge") is None
+        ):
+            typer.echo("off-season: the page is a record of the last played week, not stale")
+            log.info("page.offseason", url=target, age_days=round(health.age_days, 2))
+            return
         typer.echo("STALE: the page has stopped being deployed")
         log.error("page.stale", url=target, age_days=round(health.age_days, 2))
         raise typer.Exit(code=1)

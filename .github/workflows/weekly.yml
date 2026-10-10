@@ -69,8 +69,13 @@ jobs:
 
       # Season and week are derived from the schedule, so the job never has to
       # know today's date or which week the NFL is on.
+      # `--allow-no-week` makes the off-season a clean no-op. The week is
+      # derived from the schedule, so from the last game of the season until
+      # September there is nothing to publish - without the flag this step
+      # fails every Tuesday for seven months, and a gate that is red for a
+      # reason nobody can act on stops being read.
       - name: build the public page
-        run: uv run nflproj report
+        run: uv run nflproj report --allow-no-week
 
       - name: commit the track record
         run: |
@@ -82,7 +87,20 @@ jobs:
             exit 0
           fi
           git commit -m "chore(scorecard): weekly refresh $(date -u +%Y-%m-%d)"
-          git push
+          # The snapshotter and the midweek refresh also push to main, and both
+          # retry; this job did not, and it is the one with the worst blast
+          # radius - losing the race here means the track record is not pushed
+          # AND `deploy` is skipped through `needs`. Rebase rather than force:
+          # all three jobs only ever append.
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main && git push; then
+              exit 0
+            fi
+            echo "push attempt $attempt lost a race; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "could not push the track record after 3 attempts"
+          exit 1
 
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -109,9 +127,14 @@ jobs:
       # Checks LAST week's deploy, since this job runs beside the one that
       # publishes. A one-week lag to notice is the cost of not needing to
       # serialise the jobs, and it is a great deal better than 16 days.
+      #
+      # `--allow-no-week` for the same reason as the report step, but the
+      # exemption is narrower: an unreachable page or one with no provenance
+      # marker still fails in February. Only the age bound is waived, because
+      # off-season the page is correctly frozen at the last week played.
       - name: the public page is still being deployed
         if: always()
-        run: uv run nflproj page-health
+        run: uv run nflproj page-health --allow-no-week
 
   deploy:
     needs: scorecard

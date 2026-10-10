@@ -7,8 +7,19 @@ on:
     # nothing else. Rebuilding and republishing a container image because a
     # 22 KB parquet arrived would burn minutes to produce a byte-identical
     # result. Everything else on main still runs the full pipeline.
+    #
+    # `reports/**` is here for the same reason and was missed: the weekly
+    # scorecard and the midweek refresh commit the page four times a week, and
+    # the image's inputs are code plus upstream data - never the page. So each
+    # of those commits rebuilt the image, re-ingested from nflverse and pushed a
+    # fresh `latest`, which also meant an upstream outage could turn a
+    # board-refresh commit red for reasons that had nothing to do with it.
+    #
+    # GitHub skips the run only when EVERY changed path matches, so a commit
+    # that touches code and the page still runs in full.
     paths-ignore:
       - "archive/**"
+      - "reports/**"
   pull_request:
   workflow_dispatch:
 

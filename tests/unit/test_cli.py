@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import uvicorn
@@ -13,6 +14,7 @@ from nflproj import cli
 from nflproj.ingest import archive as archive_module
 from nflproj.ingest.archive import Observation
 from nflproj.predictors.baselines import HEADLINE_BASELINE_NAME, default_baselines
+from nflproj.report.health import PageHealth, PageHealthError
 
 runner = CliRunner()
 
@@ -220,3 +222,140 @@ def test_serve_flag_overrides_the_environment(monkeypatch):
     result = runner.invoke(cli.app, ["serve", "--bundle", "/elsewhere"])
     assert result.exit_code == 0
     assert os.environ["NFLPROJ_BUNDLE_DIR"] == "/elsewhere"
+
+
+# ------------------------------------------------- the off-season is not a failure
+
+
+def _frozen_calendar(monkeypatch, *, season: int | None, upcoming: int | None) -> None:
+    """A schedule whose season has ended (or never started)."""
+    monkeypatch.setattr(cli, "build_team_calendar", lambda *_a, **_k: "calendar")
+    monkeypatch.setattr(cli, "current_season", lambda *_a, **_k: season)
+    monkeypatch.setattr(cli, "next_projectable_week", lambda *_a, **_k: upcoming)
+
+
+@pytest.mark.parametrize("command", ["report", "publish"])
+def test_no_upcoming_week_fails_loudly_by_default(monkeypatch, tmp_path, command):
+    """Interactively, "there is no week" is a question, not a no-op."""
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    _frozen_calendar(monkeypatch, season=2026, upcoming=None)
+    monkeypatch.setattr(cli, "build_panel", lambda *_a, **_k: None)
+
+    result = runner.invoke(cli.app, [command])
+    assert result.exit_code != 0
+    assert "no upcoming week" in result.output
+
+
+@pytest.mark.parametrize("command", ["report", "publish"])
+def test_allow_no_week_makes_the_offseason_a_clean_no_op(monkeypatch, tmp_path, command):
+    """Seven months of red runs would teach us to stop reading the signal.
+
+    `report` and `publish` derive their week from the schedule, so between the
+    last game of a season and the following September there is no week to
+    publish. Without this flag the weekly and midweek workflows fail on every
+    run for seven months - about 120 red runs that all mean "it is February".
+    """
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    _frozen_calendar(monkeypatch, season=2026, upcoming=None)
+
+    def _explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("nothing should be built when there is no week to publish")
+
+    monkeypatch.setattr(cli, "build_panel", _explode)
+
+    result = runner.invoke(cli.app, [command, "--allow-no-week"])
+    assert result.exit_code == 0
+    assert "no upcoming week in 2026" in result.output
+
+
+@pytest.mark.parametrize("command", ["report", "publish"])
+def test_allow_no_week_does_not_excuse_a_season_that_never_started(monkeypatch, tmp_path, command):
+    """Scoped to the off-season, not to every way the schedule can be unusable.
+
+    An empty schedule means the ingest failed or the data is wrong, which is
+    actionable and looks nothing like February.
+    """
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    _frozen_calendar(monkeypatch, season=None, upcoming=None)
+    monkeypatch.setattr(cli, "build_panel", lambda *_a, **_k: None)
+
+    result = runner.invoke(cli.app, [command, "--allow-no-week"])
+    assert result.exit_code != 0
+    assert "no season has started" in result.output
+
+
+def test_allow_no_week_still_refuses_an_out_of_scope_week(monkeypatch, tmp_path):
+    """The flag covers a missing week, never an invalid one."""
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    _frozen_calendar(monkeypatch, season=2026, upcoming=1)
+    monkeypatch.setattr(cli, "build_panel", lambda *_a, **_k: None)
+
+    result = runner.invoke(cli.app, ["report", "--allow-no-week"])
+    assert result.exit_code != 0
+    assert "out of scope" in result.output
+
+
+def test_an_explicit_season_and_week_need_no_upcoming_week(monkeypatch, tmp_path):
+    """Rebuilding a past week must not depend on there being a future one."""
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    _frozen_calendar(monkeypatch, season=2026, upcoming=None)
+
+    target = cli._resolve_target(2026, 5, allow_no_week=False, command="report")
+    assert target is not None
+    assert (target.season, target.week) == (2026, 5)
+
+
+def _stale_page(days: float) -> PageHealth:
+    now = datetime(2027, 3, 2, tzinfo=UTC)
+    return PageHealth(
+        url="https://example.invalid/board/",
+        generated_at=now - timedelta(days=days),
+        fetched_at=now,
+    )
+
+
+def test_page_health_is_red_when_the_page_goes_stale_in_season(monkeypatch, tmp_path):
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "fetch_page_health", lambda *_a, **_k: _stale_page(30))
+    _frozen_calendar(monkeypatch, season=2026, upcoming=7)
+
+    result = runner.invoke(cli.app, ["page-health", "--url", "https://example.invalid/board/"])
+    assert result.exit_code == 1
+    assert "STALE" in result.output
+
+
+def test_page_health_does_not_call_a_frozen_offseason_page_stale(monkeypatch, tmp_path):
+    """Off-season the page is correctly frozen at the last week that was played.
+
+    The age bound measures whether the page is still being deployed, and that
+    question only has an answer while there are weeks to deploy. Judging it in
+    February measures the calendar.
+    """
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "fetch_page_health", lambda *_a, **_k: _stale_page(30))
+    _frozen_calendar(monkeypatch, season=2026, upcoming=None)
+
+    result = runner.invoke(
+        cli.app,
+        ["page-health", "--url", "https://example.invalid/board/", "--allow-no-week"],
+    )
+    assert result.exit_code == 0
+    assert "off-season" in result.output
+
+
+def test_an_unreachable_page_is_red_even_in_the_offseason(monkeypatch, tmp_path):
+    """A 404 is a real failure in any month, and the flag must not hide one."""
+    monkeypatch.setenv("NFLPROJ_DATA_DIR", str(tmp_path))
+
+    def _unreachable(*_args: object, **_kwargs: object) -> PageHealth:
+        raise PageHealthError("404 Not Found")
+
+    monkeypatch.setattr(cli, "fetch_page_health", _unreachable)
+    _frozen_calendar(monkeypatch, season=2026, upcoming=None)
+
+    result = runner.invoke(
+        cli.app,
+        ["page-health", "--url", "https://example.invalid/board/", "--allow-no-week"],
+    )
+    assert result.exit_code == 1
+    assert "page health unknown" in result.output

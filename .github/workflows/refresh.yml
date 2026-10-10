@@ -15,9 +15,14 @@ name: Midweek board refresh
 # week would burn ten minutes a run to produce the same file. This job reads
 # the committed scorecard and rebuilds only the upcoming board.
 #
-# Each refresh is a new content-hashed bundle with the same `valid_from` and a
-# later `created_at`, so the history of what was claimed - and when - stays
-# auditable rather than being overwritten.
+# What stays auditable is the committed page: every refresh lands in git with
+# its own `nflproj:generated-at`, so the history of what was claimed - and when
+# - is recoverable rather than overwritten. The bundle `publish` writes here is
+# NOT that record; `bundle/` is gitignored because it is derived, and nothing in
+# this job commits or uploads it. It is built anyway, three times a week, as a
+# smoke test that the serving path still produces a loadable artifact from
+# current data - a cheap check on the one code path with no other scheduled
+# coverage.
 
 on:
   schedule:
@@ -68,10 +73,14 @@ jobs:
             uv run nflproj backtest --seasons 2015-2026
           fi
 
+      # `--allow-no-week`: these crons run every weekend of the year, and from
+      # the last game of the season until September there is no week to
+      # publish. Ninety red runs that all mean "it is February" would bury a
+      # real failure.
       - name: rebuild the board
         run: |
-          uv run nflproj report
-          uv run nflproj publish
+          uv run nflproj report --allow-no-week
+          uv run nflproj publish --allow-no-week
 
       - name: commit the refreshed board
         run: |
